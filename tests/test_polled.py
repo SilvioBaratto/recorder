@@ -184,3 +184,22 @@ def test_failed_thread_start_still_lets_close_release_the_device(monkeypatch):
 
     assert probe.closed_device == 1
     assert probe.ends == []
+
+
+def test_negative_available_is_reported_as_an_error():
+    """PortAudio signals a lost device with a negative count, which must not look like idle."""
+    probe = Probe()
+
+    def _read(n: int) -> np.ndarray:
+        raise AssertionError("read() must not be called after a failed poll")
+
+    src = PolledSource(INFO, lambda: -9983, _read, probe.close_device)
+    src.start(probe.on_block, probe.on_end)
+    assert probe.ended.wait(WAIT)
+
+    src.close()
+
+    assert len(probe.ends) == 1
+    assert isinstance(probe.ends[0], OSError)
+    assert "-9983" in str(probe.ends[0])
+    assert probe.closed_device == 1

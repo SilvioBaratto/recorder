@@ -41,6 +41,8 @@ class PolledSource:
         Args:
             info: Native format and name of the stream.
             available: Returns how many frames can be read right now without blocking.
+                A negative value is a device error code: the stream ends and ``on_end``
+                receives an ``OSError`` naming it.
             read: Returns exactly the requested number of frames as a float32 array
                 shaped ``(n, channels)``; called only with a positive count that
                 ``available`` reported.
@@ -105,7 +107,11 @@ class PolledSource:
         try:
             while not self._closed.is_set():
                 n = self._available()
-                if n <= 0:
+                if n < 0:
+                    # PortAudio reports an invalidated device (unplugged, default switched)
+                    # as a negative error code; treating it as idle would record silence forever.
+                    raise OSError("device reported error {} while polling".format(n))
+                if n == 0:
                     self._closed.wait(self._poll_seconds)
                 else:
                     on_block(self._read(n))
