@@ -7,7 +7,8 @@ import time
 
 import pytest
 
-from fake_pyaudio import LOOPBACK, MIC, RATE, FakePyAudio, TeardownCrash
+from fake_backend import FakeBackend
+from fake_pyaudio import MIC, RATE, FakePyAudio, FakePyAudioModule, FakeWindowsBackend, TeardownCrash
 from recorder import _daemon, engine, state
 
 
@@ -21,15 +22,14 @@ def isolated_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def devices(monkeypatch):
-    """Return a factory that wires a :class:`FakePyAudio` into the engine."""
+    """Return a factory that wires a :class:`FakePyAudio` into the engine's Windows backend."""
     created = []
 
     def install(**kwargs) -> FakePyAudio:
-        """Build a FakePyAudio from ``kwargs`` and make the engine open it."""
+        """Build a FakePyAudio from ``kwargs`` and make the engine capture through it."""
         pa = FakePyAudio(**kwargs)
-        monkeypatch.setattr(engine, "open_pyaudio", lambda: pa)
-        monkeypatch.setattr(engine, "find_loopback_device", lambda _pa: LOOPBACK)
-        monkeypatch.setattr(engine, "find_input_device", lambda _pa: MIC)
+        backend = FakeWindowsBackend(FakePyAudioModule(pa))
+        monkeypatch.setattr(engine, "select_backend", lambda: backend)
         created.append(pa)
         return pa
 
@@ -82,3 +82,14 @@ def test_mp3_is_saved_before_audio_teardown(devices, tmp_path):
     output = tmp_path / "audio" / "rec.mp3"
     assert isinstance(_record_one_second_then_stop(pa, output), TeardownCrash)
     assert output.exists() and output.stat().st_size > 0
+
+
+def test_opening_failure_closes_already_opened_sources(monkeypatch, tmp_path):
+    """If the mic cannot open, the loopback already opened is released along with the backend."""
+    backend = FakeBackend(fail_microphone=True)
+    monkeypatch.setattr(engine, "select_backend", lambda: backend)
+    with pytest.raises(RuntimeError, match="failed to open"):
+        engine.record(tmp_path / "audio" / "rec.mp3", threading.Event(), lambda _msg: None,
+                      RATE, RATE // 10)
+    assert backend.loopback.closed
+    assert backend.closed

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from fake_backend import FakeBackend
 from recorder import cli, state
 
 _FAKE_DAEMON = """
@@ -108,6 +109,16 @@ def test_stop_recovers_audio_when_daemon_must_be_killed(fake_daemon, monkeypatch
     output = fake_daemon(b"ID3 captured frames", hang=True)
     assert cli.cmd_stop(None) == 0
     assert output.read_bytes() == b"ID3 captured frames"
+
+
+def test_devices_prints_backend_description(capsys, monkeypatch):
+    """``recorder devices`` prints whatever the platform backend reports, then releases it."""
+    backend = FakeBackend()
+    backend.describe = lambda: "X"
+    monkeypatch.setattr(cli, "select_backend", lambda: backend)
+    assert cli.cmd_devices(None) == 0
+    assert "X" in capsys.readouterr().out
+    assert backend.closed
 
 
 def test_stop_does_not_publish_an_empty_recording(fake_daemon):

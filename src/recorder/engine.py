@@ -10,7 +10,8 @@ from typing import Callable
 import numpy as np
 
 from . import state
-from .audio_io import DeviceStream, find_input_device, find_loopback_device, open_pyaudio
+from .audio_io import DeviceStream
+from .backends import select_backend
 from .config import BITRATE
 from .mix import fit_and_mix
 
@@ -33,8 +34,8 @@ def _mic_gain() -> float:
 def record(output: Path, stop_event: threading.Event, log: Log, samplerate: int, blocksize: int) -> int:
     """Capture the call and microphone, mix them, and save the result to ``output`` as mp3.
 
-    Opens the speaker loopback and the default microphone through PyAudioWPatch, resamples both
-    to ``samplerate``, pairs their frames block-for-block, mixes, and streams mp3 into
+    Opens the call loopback and the default microphone through the platform backend, resamples
+    both to ``samplerate``, pairs their frames block-for-block, mixes, and streams mp3 into
     ``output``'s ``.part`` sibling. Blocks until ``stop_event`` is set and both streams drain,
     then publishes the file as ``output`` before the audio devices are torn down.
 
@@ -50,36 +51,41 @@ def record(output: Path, stop_event: threading.Event, log: Log, samplerate: int,
 
     Raises:
         NoAudioCaptured: If the microphone yielded no audio; nothing is saved.
+        RuntimeError: If the backend cannot open the loopback or the microphone.
     """
     import lameenc
 
     partial = state.partial_path(output)
-    pa = open_pyaudio()
+    backend = select_backend()
     try:
-        loopback_info = find_loopback_device(pa)
-        mic_info = find_input_device(pa)
-        log(f"loopback = {loopback_info['name']!r} @ {int(loopback_info['defaultSampleRate'])} Hz")
-        log(f"microphone = {mic_info['name']!r} @ {int(mic_info['defaultSampleRate'])} Hz")
-
-        loop_stream = DeviceStream(pa, loopback_info, samplerate, stop_event, log, "loopback")
-        mic_stream = DeviceStream(pa, mic_info, samplerate, stop_event, log, "mic")
-        loop_stream.start()
-        mic_stream.start()
-
-        encoder = lameenc.Encoder()
-        encoder.set_bit_rate(BITRATE)
-        encoder.set_in_sample_rate(samplerate)
-        encoder.set_channels(2)
-        encoder.set_quality(2)
-
-        mic_gain = _mic_gain()
-        if mic_gain != 1.0:
-            log(f"mic gain = {mic_gain:.2f}")
-
-        frames = 0
-        heartbeat = max(1, (samplerate // blocksize) * 10)
-        block_index = 0
+        loopback = backend.open_loopback()
+        log(f"loopback = {loopback.info.name!r} @ {loopback.info.sample_rate} Hz")
         try:
+            microphone = backend.open_microphone()
+        except BaseException:
+            loopback.close()
+            raise
+        log(f"microphone = {microphone.info.name!r} @ {microphone.info.sample_rate} Hz")
+
+        loop_stream = DeviceStream(loopback, samplerate, stop_event, log, "loopback")
+        mic_stream = DeviceStream(microphone, samplerate, stop_event, log, "mic")
+        frames = 0
+        try:
+            loop_stream.start()
+            mic_stream.start()
+
+            encoder = lameenc.Encoder()
+            encoder.set_bit_rate(BITRATE)
+            encoder.set_in_sample_rate(samplerate)
+            encoder.set_channels(2)
+            encoder.set_quality(2)
+
+            mic_gain = _mic_gain()
+            if mic_gain != 1.0:
+                log(f"mic gain = {mic_gain:.2f}")
+
+            heartbeat = max(1, (samplerate // blocksize) * 10)
+            block_index = 0
             with open(partial, "wb") as handle:
                 while True:
                     mic_block = mic_stream.pull(blocksize)
@@ -96,17 +102,20 @@ def record(output: Path, stop_event: threading.Event, log: Log, samplerate: int,
                         log(f"recording {frames / samplerate:6.1f}s peak={float(np.abs(mixed).max()):.3f}")
                 if frames:
                     handle.write(encoder.flush())
-            # Publish before PortAudio teardown: closing a device while a reader thread is still
+            # Publish before device teardown: closing a device while a reader thread is still
             # blocked inside it crashes the process, which must not take the recording with it.
             if state.publish_partial(output):
                 log(f"saved {output} duration={frames / samplerate:.1f}s")
         finally:
             stop_event.set()
-            loop_stream.join()
-            mic_stream.join()
+            try:
+                loop_stream.join()
+            finally:
+                mic_stream.join()
 
         if frames == 0:
             raise NoAudioCaptured("microphone produced no audio")
         return frames
     finally:
-        pa.terminate()
+        # Last, after every source is closed: on Windows this terminates PortAudio.
+        backend.close()

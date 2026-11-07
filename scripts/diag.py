@@ -13,7 +13,8 @@ import time
 
 import numpy as np
 
-from recorder.audio_io import DeviceStream, find_input_device, find_loopback_device, open_pyaudio
+from recorder.audio_io import DeviceStream
+from recorder.backends import select_backend
 from recorder.config import BLOCK, SAMPLERATE
 from recorder.state import audio_dir
 
@@ -79,41 +80,51 @@ def _best_correlation(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
 
 def main() -> int:
     """Capture both devices concurrently, print a comparison, and save two mp3s."""
-    pa = open_pyaudio()
+    backend = select_backend()
     stop = threading.Event()
     try:
-        loop_info = find_loopback_device(pa)
-        mic_info = find_input_device(pa)
-        print(f"loopback source : {loop_info['name']!r}")
-        print(f"microphone      : {mic_info['name']!r}")
+        loop_source = backend.open_loopback()
+        try:
+            mic_source = backend.open_microphone()
+        except BaseException:
+            loop_source.close()
+            raise
+        print(f"loopback source : {loop_source.info.name!r}")
+        print(f"microphone      : {mic_source.info.name!r}")
 
-        loop_stream = DeviceStream(pa, loop_info, SAMPLERATE, stop, lambda m: print(m), "loopback")
-        mic_stream = DeviceStream(pa, mic_info, SAMPLERATE, stop, lambda m: print(m), "mic")
-        loop_stream.start()
-        mic_stream.start()
+        loop_stream = DeviceStream(loop_source, SAMPLERATE, stop, lambda m: print(m), "loopback")
+        mic_stream = DeviceStream(mic_source, SAMPLERATE, stop, lambda m: print(m), "mic")
+        try:
+            loop_stream.start()
+            mic_stream.start()
 
-        blocks = int(DURATION_SECONDS * SAMPLERATE / BLOCK)
-        loop_blocks: list = []
-        mic_blocks: list = []
-        collectors = [
-            threading.Thread(target=_collect, args=(loop_stream, loop_blocks, blocks)),
-            threading.Thread(target=_collect, args=(mic_stream, mic_blocks, blocks)),
-        ]
-        print(f"\n>>> Recording {DURATION_SECONDS:.0f}s - PLAY A YOUTUBE VIDEO and SPEAK NOW <<<\n")
-        start = time.time()
-        for thread in collectors:
-            thread.start()
-        for thread in collectors:
-            thread.join()
-        stop.set()
-        loop_stream.join()
-        mic_stream.join()
+            blocks = int(DURATION_SECONDS * SAMPLERATE / BLOCK)
+            loop_blocks: list = []
+            mic_blocks: list = []
+            collectors = [
+                threading.Thread(target=_collect, args=(loop_stream, loop_blocks, blocks)),
+                threading.Thread(target=_collect, args=(mic_stream, mic_blocks, blocks)),
+            ]
+            print(f"\n>>> Recording {DURATION_SECONDS:.0f}s - PLAY A YOUTUBE VIDEO and SPEAK NOW <<<\n")
+            start = time.time()
+            for thread in collectors:
+                thread.start()
+            for thread in collectors:
+                thread.join()
+        finally:
+            # Sources must be closed before backend.close(): tearing a device down under a
+            # reader still inside it crashes the process.
+            stop.set()
+            try:
+                loop_stream.join()
+            finally:
+                mic_stream.join()
         print(f"(captured {time.time() - start:.1f}s)")
 
         loop = _to_array(loop_blocks)
         mic = _to_array(mic_blocks)
     finally:
-        pa.terminate()
+        backend.close()
 
     audio_dir().mkdir(parents=True, exist_ok=True)
     loop_path = audio_dir() / "_diag_loopback.mp3"

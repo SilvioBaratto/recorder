@@ -1,7 +1,7 @@
 """The ``recorder`` command: start/stop/status/devices subcommands.
 
 Kept free of audio-library imports so ``status``/``stop`` run instantly; the daemon process
-(and the ``devices`` listing) pull in soundcard on demand.
+(and the ``devices`` listing) pull in the platform's audio library on demand.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import state
+from .backends import select_backend
 from .config import BLOCK, SAMPLERATE
 
 _STARTUP_GRACE_SECONDS = 1.2
@@ -117,13 +118,11 @@ def cmd_status(_args) -> int:
 
 def cmd_devices(_args) -> int:
     """List the loopback and microphone devices that would be captured."""
-    from .audio_io import describe_devices, open_pyaudio
-
-    pa = open_pyaudio()
+    backend = select_backend()
     try:
-        print(describe_devices(pa))
+        print(backend.describe())
     finally:
-        pa.terminate()
+        backend.close()
     return 0
 
 
