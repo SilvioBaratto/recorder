@@ -7,6 +7,10 @@
 # The repository is mounted read-only and copied inside the container, so nothing is written
 # into the host checkout. The container needs network access for apt and pip. PipeWire is not
 # covered.
+#
+# It fails on: a unit-test failure on Linux, a missing default device that is not reported as
+# such, a tone missing from the recording, any dropout on the call side, and an echo guard that
+# accepts a monitor as the microphone.
 set -euo pipefail
 
 IMAGE="ubuntu:24.04"
@@ -64,10 +68,11 @@ for label, hz in TONES:
     # same level.
     present[hz] = ratio >= MIN_RATIO and share >= MIN_SHARE
 
-# Informational, not asserted: where each tone sits in the file and where it drops out. A gap
-# inside a steady tone means the mixer padded that side with silence.
+# Where each tone sits in the file and where it drops out. A gap inside a steady tone means the
+# mixer padded that side with silence; on the call side that fails the run.
 envelope_frames = RATE // 200
 all_freqs = np.fft.rfftfreq(len(mono), 1.0 / RATE)
+dropouts = {}
 for label, hz in TONES:
     if not present[hz]:
         print(f"{label}: missing")
@@ -90,38 +95,47 @@ for label, hz in TONES:
     detail = "".join(f"; {a * 5 / 1000:.3f} s for {(b - a + 1) * 5} ms" for a, b in gaps)
     print(f"{label}: heard from {on * 5 / 1000:.3f} s to {(off + 1) * 5 / 1000:.3f} s, "
           f"{len(gaps)} dropout(s){detail}")
+    dropouts[hz] = len(gaps)
 
 if not all(present.values()):
     sys.exit(f"FAIL: a tone is below {MIN_RATIO:.0f}x the median spectral magnitude "
              f"or below {MIN_SHARE:.0%} of the other tone")
+print(f"call-side dropouts: {dropouts[880.0]}")
+if dropouts[880.0]:
+    sys.exit(f"FAIL: the call side has {dropouts[880.0]} dropout(s)")
 PY
 )
 
 BURST_PROBE=$(cat <<'PY'
-import subprocess
 import sys
 import threading
 import time
 
+from recorder.backends.linux import ParecSource
+
 RATE = 48000
-FRAME_BYTES = 8
 SECONDS = 4.0
 
-argv = ["parec", f"--device={sys.argv[1]}", "--format=float32le", f"--rate={RATE}",
-        "--channels=2", "--latency-msec=100"]
-# Same pipe setup and read size as ParecSource, so the bursts are the ones the backend sees.
-proc = subprocess.Popen(argv, bufsize=0, stdout=subprocess.PIPE)
-timer = threading.Timer(SECONDS, proc.terminate)
-timer.start()
-start = time.monotonic()
+# The backend's own reader (parec arguments, unbuffered pipe, read size; see
+# src/recorder/backends/linux.py) with no reserve, so every delivery is one parec read.
 reads = []
-while True:
-    data = proc.stdout.read(65536)
-    if not data:
-        break
-    reads.append((time.monotonic() - start, len(data) // FRAME_BYTES))
-timer.cancel()
-proc.wait()
+errors = []
+ended = threading.Event()
+
+
+def on_end(error):
+    errors.append(error)
+    ended.set()
+
+
+start = time.monotonic()
+source = ParecSource(sys.argv[1])
+source.start(lambda block: reads.append((time.monotonic() - start, len(block))), on_end)
+ended.wait(SECONDS)
+source.close()
+ended.wait(5.0)
+if errors and errors[0] is not None:
+    sys.exit(f"{sys.argv[1]}: parec failed: {errors[0]}")
 if len(reads) < 3:
     sys.exit(f"{sys.argv[1]}: only {len(reads)} reads in {SECONDS:.0f} s")
 sizes = sorted(n for _, n in reads[1:-1] or reads)
@@ -198,11 +212,14 @@ user_main() {
     trap dump_diagnostics EXIT
     cd "$WORK"
 
-    section "installing recorder into a virtualenv"
+    section "installing recorder and its test dependencies into a virtualenv"
     python3 --version
     python3 -m venv .venv
-    .venv/bin/pip install -q --disable-pip-version-check -e .
+    .venv/bin/pip install -q --disable-pip-version-check -e ".[dev]"
     export PATH="$WORK/.venv/bin:$PATH"
+
+    section "unit tests on Linux (pytest -q)"
+    pytest -q || fail "the unit tests failed on Linux"
 
     section "starting PulseAudio as $(id -un) with no hardware"
     pulseaudio --version
@@ -211,23 +228,32 @@ user_main() {
         --load=module-native-protocol-unix >"$XDG_RUNTIME_DIR/pulse.log" 2>&1 &
     wait_for_server
 
-    section "pactl info with no sink and no source (what a missing default looks like)"
+    section "pactl info with no sink and no source (PulseAudio prints '(null)' for a missing default)"
     LC_ALL=C pactl info
     section "recorder devices with no sink and no source"
     local empty_devices
     empty_devices="$(recorder devices)"
     echo "$empty_devices"
+    grep -qF "Call loopback source : UNAVAILABLE (no default output device" <<<"$empty_devices" \
+        || fail "devices does not report the missing default output"
+    grep -qF "Microphone (your voice): UNAVAILABLE (no microphone" <<<"$empty_devices" \
+        || fail "devices does not report the missing microphone"
     if grep -qF "(null)" <<<"$empty_devices"; then
-        echo "NOTE: pactl reports a missing default as '(null)', and recorder took it for a device name"
+        fail "devices took pactl's '(null)' placeholder for a device name"
     fi
-    section "recorder start with no sink and no source (informational)"
+    section "recorder start with no sink and no source"
     RECORDER_HOME="$(new_home)"
     export RECORDER_HOME
-    recorder start || true
-    sleep 1
-    if [[ "$(recorder status)" != "Not recording." ]]; then
+    local refused_empty
+    if refused_empty="$(recorder start 2>&1)"; then
+        echo "$refused_empty"
         recorder stop || true
+        fail "recorder start succeeded with no sink and no source"
     fi
+    echo "$refused_empty"
+    grep -qF "no default output device" <<<"$refused_empty" \
+        || fail "the refusal does not mention 'no default output device'"
+    [[ "$(recorder status)" == "Not recording." ]] || fail "a recorder daemon is still running"
     recorder status
 
     section "loading null sink 'virt' (call) and virtual source 'fakemic' (microphone)"
@@ -304,7 +330,7 @@ user_main() {
     python -u -c "$BURST_PROBE" virt.monitor
     python -u -c "$BURST_PROBE" fakemic
 
-    section "PASS: both tones recorded on a real PulseAudio server, and the echo guard refused a monitor"
+    section "PASS: unit tests green, missing defaults reported, both tones recorded with no call-side dropout, echo guard refused a monitor"
 }
 
 case "${1:-}" in
