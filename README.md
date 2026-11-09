@@ -187,13 +187,12 @@ permission or device.
   AirPods profile change mid-call.
 - Linux: the default output is resolved when recording starts; switching it mid-recording is
   not followed.
-- Linux: the call lags your voice by a constant 0.1 to 0.3 s. The recorder holds back the
-  first 0.2 s of call audio as a reserve, so that `parec` bursts arriving a moment late do not
+- Linux: the call lags your voice by a constant 0.2 to 0.4 s. The recorder holds back the
+  first 0.3 s of call audio as a reserve, so that `parec` bursts arriving a moment late do not
   leave gaps in the call; the call audio still in that reserve when you stop (up to about
-  0.2 s) is not in the file. The reserve absorbs about 0.1 s of timing difference between the
-  two streams; beyond that a short gap can still appear in the call (a single 15 to 30 ms gap
-  in some of the Docker test recordings). macOS has no such reserve, and whether its call side
-  shows the same short gaps is unverified.
+  0.3 s) is not in the file. The reserve absorbs about 0.2 s of timing difference between the
+  two streams; a longer stall could still leave a short gap in the call. macOS has no such
+  reserve, and whether its call side shows the same short gaps is unverified.
 - Only macOS warns about a silent call side. Windows and Linux never do.
 - The microphone and the call are clocked by separate devices, so a very long recording can
   drift between them.

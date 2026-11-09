@@ -290,20 +290,23 @@ def test_reserve_not_reached_is_delivered_before_an_unexpected_exit():
     assert "exit code 1" in str(error) and "Stream error" in str(error)
 
 
-def test_loopback_is_held_back_by_two_mixing_blocks():
-    """The call side reaches the mixer only once two blocks arrived, which become its reserve."""
+def test_loopback_is_held_back_by_its_reserve():
+    """The call side reaches the mixer only once its reserve of whole blocks arrived, all at once."""
+    reserve_blocks, remainder = divmod(linux._LOOPBACK_RESERVE_FRAMES, BLOCK)
+    assert reserve_blocks >= 1 and remainder == 0
     proc = FakeProc()
     probe = Probe()
     source = _backend(spawn=FakeSpawn(proc)).open_loopback()
     source.start(probe.on_block, probe.on_end)
     block = np.full((BLOCK, 2), 0.25, dtype="<f4").tobytes()
     try:
+        for _ in range(reserve_blocks - 1):
+            proc.stdout.feed(block)
+            assert proc.stdout.wait_handled(WAIT)
+            assert probe.frames == 0
         proc.stdout.feed(block)
         assert proc.stdout.wait_handled(WAIT)
-        assert probe.frames == 0
-        proc.stdout.feed(block)
-        assert proc.stdout.wait_handled(WAIT)
-        assert [len(b) for b in probe.blocks] == [2 * BLOCK]
+        assert [len(b) for b in probe.blocks] == [linux._LOOPBACK_RESERVE_FRAMES]
     finally:
         source.close()
     assert probe.ended.wait(WAIT)

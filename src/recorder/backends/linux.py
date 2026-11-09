@@ -29,10 +29,12 @@ _MONITOR_SUFFIX = ".monitor"
 # buffered and pads the shortfall with silence, and the late frames then shift all later call
 # audio. Without a reserve, parec's 100 ms bursts (the same size as that block) make whichever
 # stream lands first decide an underrun, and a split or late read leaves a 25-100 ms hole.
-# Holding the first two blocks back gives the call side a standing reserve that absorbs up to
-# about one block of jitter between the two streams, at the price of a constant lag of the call
-# behind the microphone and of the reserve being left unmixed at stop.
-_LOOPBACK_RESERVE_FRAMES = 2 * BLOCK
+# Holding the first blocks back gives the call side a standing reserve that absorbs that jitter.
+# Under load the two streams' reads drift more than one block apart: in 10 traced recordings
+# per size against PulseAudio, the call had a gap in 4 with no reserve, 1 with two blocks and
+# none with three. The price is a constant lag of the call behind the microphone (0.2-0.4 s,
+# depending on the phase between the bursts) and the reserve being left unmixed at stop.
+_LOOPBACK_RESERVE_FRAMES = 3 * BLOCK
 
 _MISSING_TOOLS = ("{} not found: install the pulseaudio-utils package "
                   "(libpulse on Arch Linux)")
@@ -272,7 +274,8 @@ class LinuxBackend:
 
         Returns:
             An unstarted source recording what the default sink plays. It holds its first
-            two mixing blocks back, so the call lags the microphone by a constant 0.1-0.3 s.
+            three mixing blocks (0.3 s) back, so the call lags the microphone by a constant
+            0.2-0.4 s.
 
         Raises:
             RuntimeError: If ``pactl``/``parec`` are missing, the server cannot be queried,

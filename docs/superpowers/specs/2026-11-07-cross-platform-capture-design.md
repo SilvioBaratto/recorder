@@ -194,13 +194,15 @@ environment.
   the loopback would stall it on a silent WASAPI loopback. So `ParecSource` takes
   `reserve_frames`: it holds its deliveries back until that many frames have arrived, hands
   them over together, and then delivers every read as it comes, which leaves the downstream
-  `DeviceStream` a standing reserve. The loopback uses `2 * BLOCK` (9600 frames, 0.2 s),
-  which absorbs up to one extra block of jitter between the two streams; the microphone uses
-  none. Frames still held back at `close()` are dropped; if `parec` exits by itself first,
-  they are delivered before `on_end` reports the exit. The cost is a constant lag of the call
-  behind the microphone, 0.1 to 0.3 s depending on the phase between the two streams, and up
-  to about 0.2 s of call audio left unmixed at stop. The engine, `fit_and_mix` and the Windows
-  path are unchanged.
+  `DeviceStream` a standing reserve. The loopback uses `3 * BLOCK` (14400 frames, 0.3 s),
+  which absorbs up to two extra blocks of jitter between the two streams; the microphone uses
+  none. Two blocks were not enough: under recording load both streams' reads are irregular,
+  and in 10 traced recordings per size the call had a gap in 4 with no reserve, 1 with two
+  blocks and none with three (see open question 3). Frames still held back at `close()` are
+  dropped; if `parec` exits by itself first, they are delivered before `on_end` reports the
+  exit. The cost is a constant lag of the call behind the microphone, 0.2 to 0.4 s depending
+  on the phase between the two streams' bursts, and up to about 0.3 s of call audio left
+  unmixed at stop. The engine, `fit_and_mix` and the Windows path are unchanged.
 - **Orphans:** on a normal stop the daemon closes each `parec` itself (`SIGTERM`, then
   `SIGKILL`) before it exits. Only when the daemon has not exited 15 s after the stop request
   does `recorder stop` terminate the daemon's whole process group, which `parec` belongs to.
@@ -294,9 +296,10 @@ output switches are not recovered.
      environment, `parec` frame reassembly across split reads, and `SIGTERM` / `SIGKILL`
      shutdown against a fake subprocess.
    - The Linux loopback reserve: scripted `parec` arrivals (late bursts, split reads, a
-     250 ms stall flushed as 64 KiB reads, a two-block microphone backlog) replayed through
-     `ParecSource`, `DeviceStream` and `fit_and_mix`, with no silence inside the call with the
-     reserve and the expected gaps without it.
+     250 ms stall flushed as 64 KiB reads in several interleavings, a two-block microphone
+     backlog) replayed through `ParecSource`, `DeviceStream` and `fit_and_mix`, with no
+     silence inside the call with the reserve and the expected gaps without it. Two of the
+     scripts still leave a 100 ms gap with a two-block reserve.
    - The silent-call-side warning through the daemon and through `recorder stop`.
    - The `pid_alive` and `terminate` changes against real child processes, and the
      `cmd_start` failure check against a child that exits immediately.
@@ -364,8 +367,7 @@ goes through the backend interface.
    call gap in 4 of 10 with no reserve, 1 of 10 with two blocks and 0 of 10 with three blocks.
    Under that load both streams' reads were irregular (about 100 to 7400 frames), and the
    two-block gap came when the microphone's deliveries ran more than a block ahead of the
-   loopback's. A three-block reserve (0.1 s more lag) or placing the loopback on the
-   microphone's timeline in the engine would close the remaining gaps; neither is implemented.
+   loopback's. The reserve was therefore raised to three blocks (0.1 s more lag).
    With `virt.monitor` as the default source, `recorder start` now fails with "no microphone:
    the default input is 'virt.monitor', a monitor of an output; ...".
    **Still open:** PipeWire through `pipewire-pulse`, and hardware sinks and microphones;

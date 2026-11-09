@@ -39,7 +39,7 @@ stereo and channels beyond two are dropped; both streams are resampled to 48 kHz
 microphone block (4800 frames, about 0.1 s) is summed, with clipping, with whatever call audio
 is buffered at that moment and encoded straight to a 128 kbps mp3 (`lameenc`, no ffmpeg
 needed). The microphone sets the timeline: a silent or idle call side contributes silence and
-never stalls the recording. On Linux the call side starts with a 0.2 s reserve so that `parec`
+never stalls the recording. On Linux the call side starts with a 0.3 s reserve so that `parec`
 bursts arriving a moment late do not leave gaps (see Known limits).
 
 ## How start/stop talk to each other
@@ -144,14 +144,14 @@ fails with a message asking for Python 3.11 or later.
   mid-recording is not followed. The backend is unit-tested against fakes and was also run end
   to end against a real PulseAudio server in Docker (`scripts/e2e_linux.sh`, null sinks and
   played tones); PipeWire and real audio hardware are unverified.
-- Linux: the call lags the microphone by a constant 0.1 to 0.3 s. The loopback's `parec`
-  reader holds back its first two blocks (0.2 s) and then streams, which leaves the mixer a
+- Linux: the call lags the microphone by a constant 0.2 to 0.4 s. The loopback's `parec`
+  reader holds back its first three blocks (0.3 s) and then streams, which leaves the mixer a
   standing reserve of call audio; without it, a burst that arrived just after its microphone
-  block was padded with silence and shifted the rest of the call. Up to about 0.2 s of call
-  audio still in the reserve at stop is not mixed. The reserve absorbs about one block of
-  timing difference between the two streams; in the Docker end-to-end runs 5 of 7 passed and
-  each of the other two had a single 15 or 20 ms gap in the call. macOS has no such reserve;
-  whether its call side shows the same gaps is unverified.
+  block was padded with silence and shifted the rest of the call. Up to about 0.3 s of call
+  audio still in the reserve at stop is not mixed. The reserve absorbs about two blocks of
+  timing difference between the two streams. An earlier two-block reserve passed 5 of 7 Docker
+  end-to-end runs (each failure a single 15 or 20 ms call gap), which is why it is three.
+  macOS has no such reserve; whether its call side shows the same gaps is unverified.
 - Windows: the backend was moved, not rewritten, and is tested against an in-memory
   PyAudioWPatch fake. It is a behaviour-preserving move apart from reporting a negative
   `available()` as a device error and ignoring blocks delivered after stop.

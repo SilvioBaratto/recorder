@@ -173,10 +173,23 @@ SCENARIOS = [
         [BLOCK],
         id="iii-both-stall-250ms-MLML",
     ),
+    # The whole microphone backlog lands before any loopback read: two blocks of extra lead,
+    # more than a two-block reserve absorbs.
+    pytest.param(
+        STEADY_LOOP_FIRST + [(M, PIPE_READ_FRAMES), (M, 3808), (L, PIPE_READ_FRAMES), (L, 3808)]
+        + TAIL,
+        [2 * BLOCK],
+        id="iii-both-stall-250ms-MMLL",
+    ),
     pytest.param(
         STEADY_MIC_FIRST + [(M, 2 * BLOCK), (L, BLOCK), (L, BLOCK)] + TAIL,
         [BLOCK],
         id="iv-mic-backlog-of-two-blocks-first",
+    ),
+    pytest.param(
+        STEADY_LOOP_FIRST + [(M, 2 * BLOCK), (L, BLOCK), (L, BLOCK)] + TAIL,
+        [2 * BLOCK],
+        id="iv-mic-backlog-of-two-blocks-first-after-loop-first",
     ),
 ]
 
@@ -202,7 +215,12 @@ def _lags(left: np.ndarray) -> set:
 
 
 def test_reserve_delays_the_call_by_a_constant():
-    """The price of the reserve is a fixed lag of the call behind the microphone, not a drift."""
+    """The price of the reserve is a fixed lag of the call behind the microphone, not a drift.
+
+    With the loopback's bursts landing just before the microphone's, the first microphone block
+    that finds the reserve complete already overlaps it by one block.
+    """
     script = STEADY_LOOP_FIRST + TAIL
     assert _lags(_replay(script, 0)) == {0}
-    assert _lags(_replay(script, linux._LOOPBACK_RESERVE_FRAMES)) == {BLOCK}
+    assert _lags(_replay(script, linux._LOOPBACK_RESERVE_FRAMES)) == {
+        linux._LOOPBACK_RESERVE_FRAMES - BLOCK}
