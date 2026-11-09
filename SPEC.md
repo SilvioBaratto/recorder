@@ -31,7 +31,7 @@ How each OS provides them:
 | OS | Call audio | Microphone |
 |----|------------|------------|
 | Windows | WASAPI **loopback** of the default speaker, through PyAudioWPatch. On the devbox that is the "Remote Audio" device. | The default WASAPI input, through PyAudioWPatch. |
-| macOS 14.2+ | A Core Audio **process tap** on the global output mix, through `catap`. No virtual driver and no routing change, so headphones and the volume keys behave normally. | The default input, through `sounddevice`. |
+| macOS 14.2+ | A Core Audio **process tap** on the global output mix, through `catap`. By design it needs no virtual driver and no routing change, so headphones and the volume keys should be unaffected (not yet observed here). | The default input, through `sounddevice`. |
 | Linux | `parec` on `<default sink>.monitor` (PulseAudio, or PipeWire through `pipewire-pulse`). | `parec` on the default source. A default source that is itself a `.monitor` is rejected, because it would record the call twice. |
 
 Each source delivers blocks at its own native rate and channel count. Mono is duplicated to
@@ -125,9 +125,13 @@ fails with a message asking for Python 3.11 or later.
 - Designed for an editable install (`pip install -e`); paths resolve relative to this folder,
   overridable with `RECORDER_HOME`. `RECORDER_MIC_GAIN` (0.1 to 10, default 1.0) scales the
   microphone before mixing.
-- macOS delivers zeroed audio, not an error, when the terminal lacks the System Audio
-  Recording permission. The recorder can only notice that the whole call side was silent, and
-  then warns; a genuinely silent call produces the same warning. Windows and Linux never warn.
+- According to catap's documentation, macOS delivers zeroed buffers, not an error, when the
+  terminal lacks the System Audio Recording permission; this has not been observed here yet.
+  The recorder can only notice that the whole call side was silent, and then warns; a
+  genuinely silent call produces the same warning. Windows and Linux never warn.
+- macOS: the Core Audio tap capture and the "missing permission yields silence" behaviour have
+  not been run end to end on real hardware yet; the live smoke test is pending. The backend is
+  unit-tested with fakes.
 - macOS: `catap` documents that it does not recover from sleep/wake or from an output switch
   that changes the stream format. The recorder ends the recording and saves what it has when
   `catap` reports a failure. None of this has been tested on hardware, including an AirPods

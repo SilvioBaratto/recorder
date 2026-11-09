@@ -31,8 +31,9 @@ uv venv --python 3.12 && uv pip install -e .
 ```
 
 `pip install -e .` works too, inside a virtualenv built on Python 3.11 or later. The call
-audio comes from a Core Audio process tap (through `catap`); no virtual audio driver is
-needed, and your output device, headphones and volume keys are not touched.
+audio comes from a Core Audio process tap (through `catap`). By design a tap needs no virtual
+audio driver and no routing change, so your output device, headphones and volume keys should
+not be affected; that has not been observed on this project's hardware yet.
 
 Permissions: the terminal app that launches `recorder` needs two permissions in System
 Settings > Privacy & Security:
@@ -59,14 +60,18 @@ test: run `recorder start`, play some audio and speak for about 10 seconds, run
 `recorder stop`, and listen to the mp3. If `stop` prints a `Warning:` line, see
 Troubleshooting.
 
+Status: the macOS backend is unit-tested with fakes. The Core Audio tap capture and the
+"missing permission yields silence" behaviour have not been run end to end on real hardware
+yet; the live smoke test is pending.
+
 ## Linux
 
 Needs PulseAudio, or PipeWire with `pipewire-pulse`, Python 3.9 or later, and the `parec`
 and `pactl` tools. They come from the `pulseaudio-utils` package (`libpulse` on Arch Linux).
-On Debian or Ubuntu:
+On Debian or Ubuntu, `python3-venv` provides the `venv` module used below:
 
 ```
-sudo apt install pulseaudio-utils
+sudo apt install pulseaudio-utils python3-venv
 python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/recorder devices
 ```
@@ -118,9 +123,10 @@ been run on Windows since the move.
 ## Troubleshooting
 
 **macOS: the call is silent in the mp3, or `recorder stop` prints a `Warning:` line.**
-Without the System Audio Recording permission, macOS hands the recorder silence instead of an
-error. When the whole call side of a recording was silent, the recorder logs a `WARNING:` line
-in `.state/engine.log` and `recorder stop` prints it. Grant the permission to the terminal
+According to catap's documentation, a process without the System Audio Recording permission
+gets zeroed audio buffers from macOS instead of an error; this has not been observed here yet.
+When the whole call side of a recording was silent, the recorder logs a `WARNING:` line in
+`.state/engine.log` and `recorder stop` prints it. Grant the permission to the terminal
 app you run `recorder` from (see the macOS section), quit that app completely, reopen it and
 record again. The same warning appears when the call genuinely was silent. Whether macOS
 attributes the permission to the terminal when `recorder start` runs the daemon in the

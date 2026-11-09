@@ -49,8 +49,9 @@ the sentinel-file stop protocol, and the `start_new_session` detach in `cli.py`.
 | macOS 14.2+ | Core Audio process tap on the global output mix, through `catap` | `sounddevice` default input (PortAudio is bundled in its macOS wheel) |
 | Linux | `parec` on the default sink's `.monitor` source | `parec` on the default source |
 
-macOS has no loopback input device. A Core Audio tap needs no driver and no routing change, so
-headphones, AirPods and the volume keys behave normally. It requires macOS 14.2 and Python
+macOS has no loopback input device. By design a Core Audio tap needs no driver and no routing
+change, so headphones, AirPods and the volume keys should be unaffected (not yet observed on
+hardware). It requires macOS 14.2 and Python
 3.11 (a `catap` constraint). A Mac mini has no built-in input device, so a microphone or
 headset must be connected.
 
@@ -144,10 +145,10 @@ in-memory PyAudioWPatch fake only, never on Windows from this environment.
   Python 3.11 or later, `catap` importable. Each failure raises a `RuntimeError` naming the
   fix; `describe()` renders it inline instead.
 - **Permissions:** the terminal that launches the recorder needs *System Audio Recording*
-  (for the tap) and *Microphone*, and must be restarted after they are granted. macOS
-  delivers zeroed buffers instead of an error when the system-audio permission is missing, so
-  a missing permission is only visible as a silent call side; see the silent call-side
-  warning below.
+  (for the tap) and *Microphone*, and must be restarted after they are granted. According to
+  `catap`'s documentation, macOS delivers zeroed buffers instead of an error when the
+  system-audio permission is missing, so a missing permission would be visible only as a
+  silent call side (not yet observed on hardware); see the silent call-side warning below.
 - **Known limits (not verified on hardware):** `catap` documents that it does not recover
   from sleep/wake or from a format-changing output switch, and its source raises "Tap stream
   format changed during capture" when the tap format changes. The backend reports such a
@@ -287,8 +288,13 @@ goes through the backend interface.
    to the call profile mid-meeting? `catap` documents that it does not recover from
    format-changing transitions or from sleep/wake; whether and how that surfaces in a real
    recording is untested. The backend ends the recording and saves what was captured when
-   `catap` reports a failure; if a route change instead leaves the tap delivering silence or
-   nothing, the limit is documented and the stop-time warning is the only signal.
+   `catap` reports a failure. If a route change instead leaves the tap delivering silence or
+   nothing, there is no stop-time warning once the call was audible earlier: the warning fires
+   only when the loopback never carried a non-zero sample in the whole recording, and
+   `heard_signal` stays true after the first audible block. The only traces are the
+   `loopback capture error` line in `engine.log` (written when `catap` reports a failure, see
+   the watcher in `macos.py`) and a recording that ends early; a tap that silently stops
+   delivering signal leaves no trace at all. The limit is documented, not mitigated.
 3. Does `parec -d <sink>.monitor` behave the same on PipeWire as on PulseAudio, including the
    0.1 s burst size that `--latency-msec=100` is meant to give? Nothing here has run against a
    real server yet. (Docker covers PulseAudio only.)
