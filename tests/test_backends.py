@@ -15,6 +15,17 @@ assert not loaded, sorted(loaded)
 """
 
 
+@pytest.mark.parametrize("platform, backend", [
+    ("win32", "WindowsBackend"),
+    ("darwin", "MacBackend"),
+    ("linux", "LinuxBackend"),
+])
+def test_select_backend_by_platform(monkeypatch, platform, backend):
+    """Each supported platform gets its own backend, built without touching any audio library."""
+    monkeypatch.setattr(sys, "platform", platform)
+    assert type(select_backend()).__name__ == backend
+
+
 def test_unsupported_platform_raises(monkeypatch):
     """An unknown platform fails loudly instead of picking a wrong backend."""
     monkeypatch.setattr(sys, "platform", "freebsd13")
