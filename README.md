@@ -77,7 +77,7 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
 The call is recorded from the monitor of the default output (`<default sink>.monitor`) and
-your voice from the default input. No permissions are involved.
+your voice from the default input. No permissions beyond the OS defaults are involved.
 
 A healthy `recorder devices` looks like this:
 
@@ -91,12 +91,15 @@ All loopback endpoints:
 
 Status: the Linux backend is unit-tested with fakes and was also run end to end against a real
 PulseAudio 16.1 server in Docker (`bash scripts/e2e_linux.sh`: Ubuntu 24.04, null sinks,
-played tones). It has not been run against PipeWire or real audio hardware.
+played tones). That script also runs the unit tests in the container and fails on any gap in
+the call side. With the call-side reserve described under Known limits, 5 of 7 runs passed;
+each of the other two failed on a single gap of 15 or 20 ms in the call. It has not been run
+against PipeWire or real audio hardware.
 
 ## Windows
 
-Needs Python 3.9 or later. Installing pulls in `PyAudioWPatch`; no permissions or extra
-software are needed:
+Needs Python 3.9 or later. Installing pulls in `PyAudioWPatch`; no extra software and no
+permissions beyond the OS defaults are needed:
 
 ```
 python -m venv .venv
@@ -117,9 +120,11 @@ All loopback endpoints:
   - <speaker> [Loopback]
 ```
 
-Windows behaviour is unchanged. The backend was moved into `backends/windows.py` without
-logic changes and is covered by tests against an in-memory PyAudioWPatch fake; it has not
-been run on Windows since the move.
+The backend was moved into `backends/windows.py` as a behaviour-preserving move, apart from
+two changes: a negative frame count from the device (`available()`) is reported as a device
+error that ends the recording and saves it, and blocks delivered after stop are ignored. It is
+covered by tests against an in-memory PyAudioWPatch fake; it has not been run on Windows
+since the move.
 
 ## Troubleshooting
 
@@ -150,10 +155,25 @@ without it. Delete `.venv` and install again with `uv venv --python 3.12 && uv p
 Install `pulseaudio-utils` (`libpulse` on Arch Linux). The message appears in
 `recorder devices`, and in the output of `recorder start` when the daemon fails.
 
-**Linux: "no microphone: the sound server has no default input device".**
-There is no default input, or the default input is a monitor of an output; recording it would
-capture the call twice, so it is refused. List the sources with `pactl list short sources` and
-choose a microphone with `pactl set-default-source <name>`.
+**Linux: "no microphone: ...".**
+There is no default input ("the sound server has no default input device"), or the default
+input is a monitor of an output ("the default input is '<name>.monitor', a monitor of an
+output"); recording a monitor would capture the call twice, so it is refused. List the sources
+with `pactl list short sources` and choose a real microphone with
+`pactl set-default-source <name>`, or select one in the sound settings.
+
+**Linux: "no default output device; select one with 'pactl set-default-sink <name>'".**
+The sound server has no default output, so there is no monitor to record the call from;
+`pactl info` then shows `Default Sink: (null)`. List the outputs with `pactl list short sinks`
+and choose one with `pactl set-default-sink <name>`.
+
+**macOS: the recording ended early, and `.state/engine.log` has a `loopback capture error` line
+saying "Core Audio reported a system-audio capture failure while recording".**
+The Core Audio tap stopped delivering audio. The message lists the likely causes: the output
+device or route changed, the stream format changed, the tap was destroyed, or more than 256
+audio buffers queued up unprocessed. The audio captured up to that point is saved. Check the
+devices with `recorder devices` and start a new recording. This has not been observed on
+hardware yet.
 
 **`recorder start` prints "Recording failed to start".**
 The last lines of `.state/engine.log` are printed with it; they name the missing package,
@@ -162,11 +182,18 @@ permission or device.
 ## Known limits
 
 - macOS: `catap` does not recover from sleep/wake or from an output switch that changes the
-  stream format ("Tap stream format changed during capture"). The recorder ends the recording
-  and saves what it has when `catap` reports such a failure. This has not been tested on
-  hardware, including an AirPods profile change mid-call.
+  stream format. The recorder ends the recording and saves what it has when `catap` reports
+  such a failure (see Troubleshooting). This has not been tested on hardware, including an
+  AirPods profile change mid-call.
 - Linux: the default output is resolved when recording starts; switching it mid-recording is
   not followed.
+- Linux: the call lags your voice by a constant 0.1 to 0.3 s. The recorder holds back the
+  first 0.2 s of call audio as a reserve, so that `parec` bursts arriving a moment late do not
+  leave gaps in the call; the call audio still in that reserve when you stop (up to about
+  0.2 s) is not in the file. The reserve absorbs about 0.1 s of timing difference between the
+  two streams; beyond that a short gap can still appear in the call (a single 15 to 30 ms gap
+  in some of the Docker test recordings). macOS has no such reserve, and whether its call side
+  shows the same short gaps is unverified.
 - Only macOS warns about a silent call side. Windows and Linux never do.
 - The microphone and the call are clocked by separate devices, so a very long recording can
   drift between them.

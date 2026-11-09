@@ -215,8 +215,9 @@ def _signal(pid: int, sig: int) -> None:
     A process that already exited or belongs to another user is ignored.
     """
     try:
-        # killpg on a pid that is not a group leader would signal a different group, possibly
-        # the caller's own, so only a leader is signalled as a group.
+        # killpg(pid) on a pid that leads no group fails with ESRCH (no group has that id) and
+        # would leave the process unsignalled, so only a leader is signalled as a group; the
+        # pid's own group is never used, as killpg(getpgid(pid)) could hit the caller's group.
         if os.getpgid(pid) == pid:
             os.killpg(pid, sig)
         else:

@@ -29,9 +29,9 @@ _MONITOR_SUFFIX = ".monitor"
 # buffered and pads the shortfall with silence, and the late frames then shift all later call
 # audio. Without a reserve, parec's 100 ms bursts (the same size as that block) make whichever
 # stream lands first decide an underrun, and a split or late read leaves a 25-100 ms hole.
-# Holding the first two blocks back gives the call side a standing reserve that absorbs that
-# jitter, at the price of a constant lag of the call behind the microphone and of the reserve
-# being left unmixed at stop.
+# Holding the first two blocks back gives the call side a standing reserve that absorbs up to
+# about one block of jitter between the two streams, at the price of a constant lag of the call
+# behind the microphone and of the reserve being left unmixed at stop.
 _LOOPBACK_RESERVE_FRAMES = 2 * BLOCK
 
 _MISSING_TOOLS = ("{} not found: install the pulseaudio-utils package "

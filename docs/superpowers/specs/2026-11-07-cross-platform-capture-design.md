@@ -1,7 +1,8 @@
 # Cross-platform capture: macOS and Linux support
 
 Date: 2026-11-07
-Status: approved, implemented (live verification pending)
+Status: approved, implemented; Linux run end to end against PulseAudio in Docker; macOS and
+Windows live verification pending
 
 ## Goal
 
@@ -11,8 +12,10 @@ with no echo because nothing is ever played back.
 
 Success criteria:
 
-1. Windows behaviour is unchanged. The Windows backend is a behaviour-preserving move of the
-   earlier code.
+1. Windows behaviour is unchanged apart from two deliberate differences: a negative
+   `available()` from the device is reported as a device error that ends and saves the
+   recording, and blocks delivered after stop are ignored. Otherwise the Windows backend is a
+   behaviour-preserving move of the earlier code.
 2. On this Mac (macOS 27, arm64) a recording made while a video plays and the user speaks
    contains both streams. `recorder devices` explains any problem it can detect.
 3. On a stock PulseAudio or PipeWire Linux desktop the same holds, with `parec` and `pactl`
@@ -92,10 +95,11 @@ Package `src/recorder/backends/`:
 imports no audio library; it consumes a `Source` through `on_block` / `on_end`. A source that
 fails sets the shared stop event through `DeviceStream`, so the recording is saved up to that
 point. `engine.record()` opens the loopback, then the microphone (closing the loopback if the
-microphone cannot be opened), starts both streams and mixes in a microphone-driven loop: each
-microphone block sets the timeline and the loopback contributes whatever is ready, padded
-with silence. The publish-before-teardown invariant holds: the mp3 is renamed into place,
-then both sources are closed, then `backend.close()` runs.
+microphone cannot be opened, and closing both if anything fails before they start), starts
+both streams and mixes in a microphone-driven loop: each microphone block sets the timeline
+and the loopback contributes whatever is ready, padded with silence (on Linux the loopback
+source keeps a reserve, see the Linux backend). The publish-before-teardown invariant holds:
+the mp3 is renamed into place, then both sources are closed, then `backend.close()` runs.
 
 ### PolledSource
 
@@ -121,8 +125,10 @@ process when the device is torn down.
 loopback and input lookup, `describe()` in its existing format, and `terminate()` in
 `close()`. Each opened stream is wrapped in a `PolledSource` driven by
 `get_read_available()`, so the "never block in `read()`" rule moved there from the old
-`DeviceStream`. It is a behaviour-preserving move. It has been exercised against an
-in-memory PyAudioWPatch fake only, never on Windows from this environment.
+`DeviceStream`. It is a behaviour-preserving move apart from reporting a negative
+`available()` as a device error and ignoring blocks delivered after stop. It has been
+exercised against an in-memory PyAudioWPatch fake only, never on Windows from this
+environment.
 
 ### macOS backend
 
@@ -152,8 +158,12 @@ in-memory PyAudioWPatch fake only, never on Windows from this environment.
 - **Known limits (not verified on hardware):** `catap` documents that it does not recover
   from sleep/wake or from a format-changing output switch, and its source raises "Tap stream
   format changed during capture" when the tap format changes. The backend reports such a
-  failure through `on_end`, which ends the recording with what was captured. Whether a real
-  route change, such as AirPods moving to the call profile, triggers this has not been tested.
+  failure through `on_end`, which ends the recording with what was captured. The watcher only
+  sees catap's `capture_failed` flag, and catap's own reason surfaces later from `stop()`, after
+  the stream has already ended; so the message logged is the backend's, and it names the
+  likely causes (output device or route change, stream format change, a destroyed tap, more
+  than 256 queued buffers) and points at `recorder devices`. Whether a real route change, such
+  as AirPods moving to the call profile, triggers this has not been tested.
 
 ### Linux backend
 
@@ -167,20 +177,40 @@ in-memory PyAudioWPatch fake only, never on Windows from this environment.
   default source at all, is rejected with a "no microphone" error: recording a monitor as the
   microphone would capture the call twice.
 - **Capture:** one `parec` subprocess per device, started with `--format=float32le
-  --rate=48000 --channels=2 --latency-msec=100`, so PulseAudio does the format conversion,
-  the resampler becomes a no-op, and both streams arrive in bursts of about 0.1 s that match
-  the 4800-frame mixing block. A reader thread does a blocking `read` on the unbuffered pipe
+  --rate=48000 --channels=2 --latency-msec=100`, so PulseAudio does the format conversion and
+  the resampler becomes a no-op. A reader thread does a blocking `read` on the unbuffered pipe
   and carries any partial frame over to the next read. `Source.close()` sends `SIGTERM`,
   then `SIGKILL` after 1 s; the EOF unblocks the reader, which is joined for at most 2 s. A
   `parec` that exits by itself is reported through `on_end` with its exit code and stderr.
   With no PortAudio in the process there is no native teardown crash.
-- **Orphans:** `recorder stop` terminates the daemon's whole process group, and `parec`
-  inherits it. If the daemon dies on its own, `parec` is expected to exit on its next write
-  to the closed pipe; that path is not tested.
+- **Loopback reserve:** with `--latency-msec=100` both streams arrive in bursts of about
+  0.1 s, the same size as the 4800-frame mixing block. That is not an advantage: the mixer is
+  clocked by the microphone, takes whatever loopback audio is buffered at each microphone
+  block and pads the shortfall with silence, and the late frames then shift the rest of the
+  call. With no reserve, whichever stream's burst lands first decides an underrun, so a
+  loopback burst arriving just after its microphone block, a burst split across two pipe
+  reads, or a short stall inserts 25 to 100 ms of silence into the call (seen live, see open
+  question 3). A lower latency alone does not remove that race, and making the mixer wait for
+  the loopback would stall it on a silent WASAPI loopback. So `ParecSource` takes
+  `reserve_frames`: it holds its deliveries back until that many frames have arrived, hands
+  them over together, and then delivers every read as it comes, which leaves the downstream
+  `DeviceStream` a standing reserve. The loopback uses `2 * BLOCK` (9600 frames, 0.2 s),
+  which absorbs up to one extra block of jitter between the two streams; the microphone uses
+  none. Frames still held back at `close()` are dropped; if `parec` exits by itself first,
+  they are delivered before `on_end` reports the exit. The cost is a constant lag of the call
+  behind the microphone, 0.1 to 0.3 s depending on the phase between the two streams, and up
+  to about 0.2 s of call audio left unmixed at stop. The engine, `fit_and_mix` and the Windows
+  path are unchanged.
+- **Orphans:** on a normal stop the daemon closes each `parec` itself (`SIGTERM`, then
+  `SIGKILL`) before it exits. Only when the daemon has not exited 15 s after the stop request
+  does `recorder stop` terminate the daemon's whole process group, which `parec` belongs to.
+  If the daemon dies on its own, `parec` is expected to exit on its next write to the closed
+  pipe; that path is not tested.
 - **Limit (documented):** the monitor is chosen when recording starts. Switching the default
   output mid-recording is not followed.
-- **Status:** unit-tested against in-memory `parec` / `pactl` fakes only. It has not run
-  against a real PulseAudio or PipeWire server.
+- **Status:** unit-tested against in-memory `parec` / `pactl` fakes, and run end to end
+  against a real PulseAudio 16.1 server in Docker (`scripts/e2e_linux.sh`, see open question
+  3). PipeWire and real audio hardware are unverified.
 
 ### Silent call-side warning
 
@@ -190,8 +220,10 @@ never carried signal and the backend has a non-empty `silence_hint`, the engine 
 `WARNING:` line to `engine.log` and writes the hint to `.state/warning.txt`. `recorder stop`
 runs in a different process than the daemon, so that file is the channel: `stop` reads and
 deletes it and prints `Warning: ...` after the saved path, only when an mp3 was produced.
-`recorder start` clears a stale warning. A failure to write the file does not fail the
-recording.
+`stop` reads the file only after publishing the mp3, and a file it cannot read (a directory,
+no permission, bytes that are not UTF-8) counts as no warning, so the note never costs the
+recording. `recorder start` clears a stale warning. A failure to write the file does not fail
+the recording.
 
 Only the macOS backend sets a hint. It is a warning, not an error: a genuinely silent call
 must still save the mic.
@@ -223,9 +255,12 @@ output switches are not recovered.
   `ProcessLookupError` means dead; `PermissionError` means alive.
 - `terminate`: `SIGTERM` first, a 2 s grace period, then `SIGKILL` if the process survives.
   The signal goes to the process group only when the pid leads its own group
-  (`os.getpgid(pid) == pid`); otherwise it goes to the pid alone, because `os.killpg` on a
-  non-leader would signal a different group, possibly the caller's. The daemon leads its
-  group through `start_new_session`.
+  (`os.getpgid(pid) == pid`); otherwise it goes to the pid alone. `os.killpg(pid, ...)` on a
+  pid that leads no group does not reach another group: it fails with `ESRCH`, since no group
+  has that id, and the process would go unsignalled. The hazard the check also rules out is
+  `os.killpg(os.getpgid(pid), ...)` on a non-leader, which would signal the group the pid
+  belongs to, possibly the caller's own. The daemon leads its group through
+  `start_new_session`.
 - `cmd_start`: the startup check uses `proc.poll()` on the child it just spawned instead of
   pid liveness. This applies on every OS and is equivalent on Windows, where an exited child is
   reported by `poll()` the same way.
@@ -255,8 +290,13 @@ output switches are not recovered.
    - Windows backend against the in-memory PyAudioWPatch fake.
    - macOS precondition checks, sample-format conversion (`float32`, `int16`, `int32`, mono
      and stereo), the tap lifecycle against a fake `catap`, and the microphone.
-   - Linux `pactl info` parsing and the `LC_ALL=C` environment, `parec` frame reassembly
-     across split reads, and `SIGTERM` / `SIGKILL` shutdown against a fake subprocess.
+   - Linux `pactl info` parsing (including the real `(null)` output) and the `LC_ALL=C`
+     environment, `parec` frame reassembly across split reads, and `SIGTERM` / `SIGKILL`
+     shutdown against a fake subprocess.
+   - The Linux loopback reserve: scripted `parec` arrivals (late bursts, split reads, a
+     250 ms stall flushed as 64 KiB reads, a two-block microphone backlog) replayed through
+     `ParecSource`, `DeviceStream` and `fit_and_mix`, with no silence inside the call with the
+     reserve and the expected gaps without it.
    - The silent-call-side warning through the daemon and through `recorder stop`.
    - The `pid_alive` and `terminate` changes against real child processes, and the
      `cmd_start` failure check against a child that exits immediately.
@@ -265,9 +305,11 @@ output switches are not recovered.
    *System Audio Recording* and *Microphone*, run `recorder start`, play audio and speak for
    about 10 s, run `recorder stop`, and confirm both streams are audible (`scripts/diag.py`
    prints per-stream RMS). The same run answers the open questions below.
-4. **Linux:** `scripts/e2e_linux.sh` runs the backend end to end in an `ubuntu:24.04` Docker
-   container against PulseAudio, with null sinks and played tones. Results are under open
-   question 3.
+4. **Linux:** `scripts/e2e_linux.sh` runs the unit tests in an `ubuntu:24.04` Docker
+   container (success criterion 4 on Linux), then the backend end to end against PulseAudio,
+   with null sinks and played tones. It fails on any test failure, on a missing default device
+   that is not reported as such, on a missing tone, and on any dropout in the call tone.
+   Results are under open questions 3 and 4.
 5. **Windows:** cannot be run here. The backend is a behaviour-preserving move, so the check
    is a review of the diff plus a manual run by the user.
 
@@ -307,19 +349,38 @@ goes through the backend interface.
    With `virt.monitor` as the default source, `recorder start` failed with "no microphone: the
    sound server has no default input device". `parec` with the backend's arguments delivered
    4800-frame (0.1 s) reads every 100 ms, at most 110 ms apart, from both the monitor and the
-   virtual source. Seen in that container and not yet explained or fixed: in 3 of the 6
-   recordings checked for gaps, the call side started 0.1 s behind the microphone and had one
-   to three gaps of 20 to 60 ms, while a raw `parec` capture of each side alone had none.
+   virtual source. Seen in those first runs: in 3 of the 6 recordings checked for gaps, the
+   call side started 0.1 s behind the microphone and had one to three gaps of 20 to 60 ms,
+   while a raw `parec` capture of each side alone had none.
+   **Explained and mitigated, not eliminated.** The gaps were silence the microphone-clocked
+   mixer inserted when a loopback burst was not buffered yet (see the loopback reserve under
+   the Linux backend); the 25 and 60 ms gaps match a 4800-frame burst read as 3600 + 1200 and
+   1920 + 2880 frames around a microphone block. With the two-block reserve, the script (which
+   now also runs the unit tests in the container and fails on any call-side dropout) passed in
+   5 of 7 runs on 2026-11-09; each of the other two had a single gap of 15 or 20 ms in the call
+   tone. A traced run of the same rig, with the engine in-process and an independent raw
+   `parec` capture of `virt.monitor` alongside, showed that the remaining gaps are still mixer
+   pads: the raw capture was gap-free in all 30 recordings, while the recordings had an audible
+   call gap in 4 of 10 with no reserve, 1 of 10 with two blocks and 0 of 10 with three blocks.
+   Under that load both streams' reads were irregular (about 100 to 7400 frames), and the
+   two-block gap came when the microphone's deliveries ran more than a block ahead of the
+   loopback's. A three-block reserve (0.1 s more lag) or placing the loopback on the
+   microphone's timeline in the engine would close the remaining gaps; neither is implemented.
+   With `virt.monitor` as the default source, `recorder start` now fails with "no microphone:
+   the default input is 'virt.monitor', a monitor of an output; ...".
    **Still open:** PipeWire through `pipewire-pulse`, and hardware sinks and microphones;
    nothing has run against either.
 4. What does `pactl info` print when there is no default sink or source? **Answered** for
    PulseAudio 16.1 with no sink and no source loaded: the lines are present and read
    `Default Sink: (null)` and `Default Source: (null)`, not `n/a`, an empty value or
-   `@DEFAULT_SINK@`. `parse_pactl_info` does not treat `(null)` as missing yet, so
-   `recorder devices` lists `(null).monitor` and `(null)` as the devices instead of
-   `UNAVAILABLE`, and `recorder start` fails with `parec` reporting "Stream error: Invalid
-   argument" for `'(null).monitor'` followed by `NoAudioCaptured`, instead of "no default output
-   device".
+   `@DEFAULT_SINK@`. At first `parse_pactl_info` took `(null)` for a device name, so
+   `recorder devices` listed `(null).monitor` and `(null)`, and `recorder start` failed with
+   `parec` reporting "Stream error: Invalid argument" followed by `NoAudioCaptured`. It now
+   treats `(null)`, `n/a`, an empty value and any `@...` placeholder as missing: `recorder
+   devices` shows both lines as `UNAVAILABLE (no default output device; ...)` and
+   `UNAVAILABLE (no microphone: ...)`, and `recorder start` fails with "no default output
+   device; select one with 'pactl set-default-sink <name>' ...". `scripts/e2e_linux.sh` asserts
+   this against the real server, and it held in all 7 runs.
 
 Settled: the Python 3.9 floor. On 2026-11-09, with macOS's `/usr/bin/python3` (3.9.6), the
 install succeeded without `catap`, the full suite passed (149 tests), and `recorder start` exited

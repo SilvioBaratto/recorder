@@ -35,10 +35,12 @@ How each OS provides them:
 | Linux | `parec` on `<default sink>.monitor` (PulseAudio, or PipeWire through `pipewire-pulse`). | `parec` on the default source. A default source that is itself a `.monitor` is rejected, because it would record the call twice. |
 
 Each source delivers blocks at its own native rate and channel count. Mono is duplicated to
-stereo and channels beyond two are dropped; both streams are resampled to 48 kHz, paired block
-for block (4800 frames, about 0.1 s), summed with clipping and encoded straight to a 128 kbps
-mp3 (`lameenc`, no ffmpeg needed). The microphone sets the timeline: a silent or idle call
-side contributes silence and never stalls the recording.
+stereo and channels beyond two are dropped; both streams are resampled to 48 kHz. Each
+microphone block (4800 frames, about 0.1 s) is summed, with clipping, with whatever call audio
+is buffered at that moment and encoded straight to a 128 kbps mp3 (`lameenc`, no ffmpeg
+needed). The microphone sets the timeline: a silent or idle call side contributes silence and
+never stalls the recording. On Linux the call side starts with a 0.2 s reserve so that `parec`
+bursts arriving a moment late do not leave gaps (see Known limits).
 
 ## How start/stop talk to each other
 
@@ -120,8 +122,9 @@ fails with a message asking for Python 3.11 or later.
 ## Known limits
 
 - Mic and call audio are clocked by separate devices, so a very long recording can drift. The
-  block-for-block pairing keeps them locked step-wise; if drift ever bites, split to stereo
-  (mic left / call right) instead of summing.
+  mixer pairs each microphone block with whatever call audio is buffered at that moment and
+  pads a shortfall with silence, so the two streams are paired by availability, not locked
+  together; if drift ever bites, split to stereo (mic left / call right) instead of summing.
 - Designed for an editable install (`pip install -e`); paths resolve relative to this folder,
   overridable with `RECORDER_HOME`. `RECORDER_MIC_GAIN` (0.1 to 10, default 1.0) scales the
   microphone before mixing.
@@ -141,5 +144,14 @@ fails with a message asking for Python 3.11 or later.
   mid-recording is not followed. The backend is unit-tested against fakes and was also run end
   to end against a real PulseAudio server in Docker (`scripts/e2e_linux.sh`, null sinks and
   played tones); PipeWire and real audio hardware are unverified.
-- Windows: behaviour is unchanged. The backend was moved, not rewritten, and is tested against
-  an in-memory PyAudioWPatch fake.
+- Linux: the call lags the microphone by a constant 0.1 to 0.3 s. The loopback's `parec`
+  reader holds back its first two blocks (0.2 s) and then streams, which leaves the mixer a
+  standing reserve of call audio; without it, a burst that arrived just after its microphone
+  block was padded with silence and shifted the rest of the call. Up to about 0.2 s of call
+  audio still in the reserve at stop is not mixed. The reserve absorbs about one block of
+  timing difference between the two streams; in the Docker end-to-end runs 5 of 7 passed and
+  each of the other two had a single 15 or 20 ms gap in the call. macOS has no such reserve;
+  whether its call side shows the same gaps is unverified.
+- Windows: the backend was moved, not rewritten, and is tested against an in-memory
+  PyAudioWPatch fake. It is a behaviour-preserving move apart from reporting a negative
+  `available()` as a device error and ignoring blocks delivered after stop.
