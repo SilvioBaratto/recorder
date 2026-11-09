@@ -27,6 +27,10 @@ _MONITOR_SUFFIX = ".monitor"
 
 _MISSING_TOOLS = ("{} not found: install the pulseaudio-utils package "
                   "(libpulse on Arch Linux)")
+_NO_SINK = ("no default output device; select one with 'pactl set-default-sink <name>' "
+            "(list with 'pactl list short sinks')")
+_CHOOSE_SOURCE = ("select a real microphone with 'pactl set-default-source <name>' (list them "
+                  "with 'pactl list short sources') or in the sound settings")
 
 
 def parse_pactl_info(text: str) -> Tuple[Optional[str], Optional[str]]:
@@ -36,8 +40,9 @@ def parse_pactl_info(text: str) -> Tuple[Optional[str], Optional[str]]:
         text: English ``pactl info`` output; other locales translate the labels.
 
     Returns:
-        ``(default_sink, default_source)``. Either is ``None`` when its line is absent,
-        empty or ``n/a``, which is how a server without that device reports it.
+        ``(default_sink, default_source)``. Either is ``None`` when the server has no such
+        default: the line is absent, empty, ``(null)`` (what PulseAudio 16.1 prints), ``n/a``,
+        or an ``@...@`` placeholder that names no real device.
     """
     values = {}
     for line in text.splitlines():
@@ -47,7 +52,9 @@ def parse_pactl_info(text: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _usable(value: Optional[str]) -> Optional[str]:
-    return value if value and value != "n/a" else None
+    if not value or value in ("(null)", "n/a") or value.startswith("@"):
+        return None
+    return value
 
 
 class ParecSource:
@@ -281,15 +288,19 @@ class LinuxBackend:
     def _default_sink(self) -> str:
         sink, _ = parse_pactl_info(self._pactl("info"))
         if sink is None:
-            raise RuntimeError("no default output device: the sound server reports no default sink")
+            raise RuntimeError(_NO_SINK)
         return sink
 
     def _default_source(self) -> str:
         _, source = parse_pactl_info(self._pactl("info"))
+        if source is None:
+            raise RuntimeError("no microphone: the sound server has no default input device; "
+                               + _CHOOSE_SOURCE)
         # The default source can be a sink's monitor, and recording that as the microphone
         # captures the call a second time, which is exactly the echo this tool exists to avoid.
-        if source is None or source.endswith(_MONITOR_SUFFIX):
-            raise RuntimeError("no microphone: the sound server has no default input device")
+        if source.endswith(_MONITOR_SUFFIX):
+            raise RuntimeError(f"no microphone: the default input is {source!r}, a monitor of an "
+                               f"output; {_CHOOSE_SOURCE}")
         return source
 
     def _monitor_names(self) -> List[str]:
@@ -309,7 +320,9 @@ class LinuxBackend:
         try:
             # pactl translates its labels per locale, which would hide "Default Sink:" from
             # the parser; LC_ALL=C pins the English text.
-            result = self._run(argv, capture_output=True, text=True,
+            # Device descriptions are not guaranteed to decode in the locale's encoding, and a
+            # UnicodeDecodeError would escape describe(), which must never raise.
+            result = self._run(argv, capture_output=True, text=True, errors="replace",
                                env={**os.environ, "LC_ALL": "C"})
         except OSError as exc:
             raise RuntimeError(f"could not run pactl: {exc}") from exc

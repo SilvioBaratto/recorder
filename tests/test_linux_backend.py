@@ -99,6 +99,31 @@ Cookie: abcd:1234
 """
 
 
+# Captured from PulseAudio 16.1 (ubuntu:24.04, scripts/e2e_linux.sh) with no sink and no source
+# loaded: a missing default is printed as "(null)".
+REAL_EMPTY_INFO = """\
+Server String: /tmp/runtime-tester/pulse/native
+Library Protocol Version: 35
+Server Protocol Version: 35
+Is Local: yes
+Client Index: 1
+Tile Size: 65472
+User Name: tester
+Host Name: 83b102239f3a
+Server Name: pulseaudio
+Server Version: 16.1
+Default Sample Specification: s16le 2ch 44100Hz
+Default Channel Map: front-left,front-right
+Default Sink: (null)
+Default Source: (null)
+Cookie: 14c6:dc7a
+"""
+
+
+def _empty_server() -> FakeRun:
+    return FakeRun(info=FakeCompleted(REAL_EMPTY_INFO), sources=FakeCompleted(""))
+
+
 def test_parse_pactl_info_extracts_defaults():
     """The two ``Default ...:`` lines are the only ones read, whatever else the server prints."""
     assert parse_pactl_info(SAMPLE_INFO) == (SINK, SOURCE)
@@ -108,10 +133,41 @@ def test_parse_pactl_info_extracts_defaults():
     "Default Sink: n/a\nDefault Source: n/a\n",
     "Default Sink:\nDefault Source:   \n",
     "Server Name: PipeWire\n",
+    REAL_EMPTY_INFO,
+    "Default Sink: @DEFAULT_SINK@\nDefault Source: @DEFAULT_SOURCE@\n",
 ])
 def test_parse_pactl_info_reports_unusable_defaults_as_none(text):
     """A server with no default device must not look like a device literally named ``n/a``."""
     assert parse_pactl_info(text) == (None, None)
+
+
+def test_real_empty_server_has_no_default_output():
+    """PulseAudio's ``(null)`` placeholder is reported as a missing output, not recorded."""
+    with pytest.raises(RuntimeError, match="no default output"):
+        _backend(run=_empty_server()).open_loopback()
+
+
+def test_real_empty_server_has_no_microphone():
+    """The same placeholder for the source means there is no microphone to record."""
+    with pytest.raises(RuntimeError, match="no microphone"):
+        _backend(run=_empty_server()).open_microphone()
+
+
+def test_describe_on_a_real_empty_server_lists_no_placeholder_device():
+    """``recorder devices`` explains the missing defaults instead of naming ``(null).monitor``."""
+    text = _backend(run=_empty_server()).describe()
+    lines = text.splitlines()
+    assert lines[0].startswith("Call loopback source : UNAVAILABLE (no default output")
+    assert lines[1].startswith("Microphone (your voice): UNAVAILABLE (no microphone")
+    assert "(null)" not in text
+
+
+def test_pactl_output_is_decoded_leniently():
+    """A byte the locale cannot decode must not crash ``recorder devices`` or ``start``."""
+    run = FakeRun()
+    _backend(run=run).describe()
+    assert run.calls
+    assert all(kwargs.get("errors") == "replace" for _, kwargs in run.calls)
 
 
 def test_pactl_runs_with_c_locale(monkeypatch):
@@ -371,6 +427,42 @@ def test_missing_default_source_is_rejected(source):
     run = FakeRun(info=FakeCompleted(info_text(source=source)))
     with pytest.raises(RuntimeError, match="no microphone"):
         _backend(run=run).open_microphone()
+
+
+def test_no_default_sink_message_names_the_remedy():
+    """The error says which command selects an output and which one lists them."""
+    run = FakeRun(info=FakeCompleted(info_text(sink=None)))
+    with pytest.raises(RuntimeError) as excinfo:
+        _backend(run=run).open_loopback()
+    message = str(excinfo.value)
+    assert "no default output" in message
+    assert "pactl set-default-sink" in message
+    assert "pactl list short sinks" in message
+
+
+def test_monitor_as_microphone_message_names_the_source_and_the_remedy():
+    """The refusal names the offending monitor, so the user knows what to change and how."""
+    monitor = f"{SINK}.monitor"
+    run = FakeRun(info=FakeCompleted(info_text(source=monitor)))
+    with pytest.raises(RuntimeError) as excinfo:
+        _backend(run=run).open_microphone()
+    message = str(excinfo.value)
+    assert "no microphone" in message
+    assert f"'{monitor}'" in message
+    assert "monitor of an output" in message
+    assert "pactl set-default-source" in message
+    assert "pactl list short sources" in message
+
+
+def test_missing_microphone_message_names_the_remedy():
+    """With no default input at all, the error still says how to choose one."""
+    run = FakeRun(info=FakeCompleted(info_text(source=None)))
+    with pytest.raises(RuntimeError) as excinfo:
+        _backend(run=run).open_microphone()
+    message = str(excinfo.value)
+    assert "no microphone" in message
+    assert "pactl set-default-source" in message
+    assert "pactl list short sources" in message
 
 
 def test_pactl_failure_is_a_runtime_error_with_its_stderr():
