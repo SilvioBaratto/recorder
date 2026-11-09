@@ -52,6 +52,7 @@ class _Pipe:
 
     ``read`` returns what is queued (at most ``n`` bytes), blocks while the process is live and
     silent, and returns ``b""`` forever once the process has exited and the queue is drained.
+    A read never spans two fed chunks, so each ``feed`` models one arrival on the pipe.
     """
 
     def __init__(self) -> None:
@@ -59,17 +60,43 @@ class _Pipe:
         self._pending = b""
         self._eof = False
         self.closed = False
+        self._progress = threading.Condition()
+        self._fed = 0
+        self._handed_out = 0
+        self._handled = 0
 
     def feed(self, data: bytes) -> None:
         """Make ``data`` available to the next read."""
+        with self._progress:
+            self._fed += len(data)
         self._queue.put(data)
 
     def end(self) -> None:
         """Mark EOF behind everything already fed."""
         self._queue.put(None)
 
+    def wait_handled(self, timeout: float = _PIPE_WAIT_SECONDS) -> bool:
+        """Wait until the reader has processed every fed byte and come back to read again.
+
+        Returns:
+            Whether that happened within ``timeout`` seconds.
+        """
+        with self._progress:
+            return self._progress.wait_for(lambda: self._handled >= self._fed, timeout)
+
     def read(self, n: int = -1) -> bytes:
         """Return up to ``n`` queued bytes, ``b""`` at EOF."""
+        # The reader is single-threaded: asking for more proves it finished with everything
+        # handed out so far, which is what wait_handled() waits for.
+        with self._progress:
+            self._handled = self._handed_out
+            self._progress.notify_all()
+        out = self._read(n)
+        with self._progress:
+            self._handed_out += len(out)
+        return out
+
+    def _read(self, n: int) -> bytes:
         if self._pending:
             return self._take(n)
         if self._eof:

@@ -15,7 +15,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 
-from ..config import SAMPLERATE
+from ..config import BLOCK, SAMPLERATE
 from .base import OnBlock, OnEnd, Source, SourceInfo
 
 _CHANNELS = 2
@@ -24,6 +24,15 @@ _READ_BYTES = 65536
 _TERMINATE_WAIT_SECONDS = 1.0
 _JOIN_SECONDS = 2.0
 _MONITOR_SUFFIX = ".monitor"
+
+# The engine mixes on the microphone's clock: at each mic block it takes whatever call audio is
+# buffered and pads the shortfall with silence, and the late frames then shift all later call
+# audio. Without a reserve, parec's 100 ms bursts (the same size as that block) make whichever
+# stream lands first decide an underrun, and a split or late read leaves a 25-100 ms hole.
+# Holding the first two blocks back gives the call side a standing reserve that absorbs that
+# jitter, at the price of a constant lag of the call behind the microphone and of the reserve
+# being left unmixed at stop.
+_LOOPBACK_RESERVE_FRAMES = 2 * BLOCK
 
 _MISSING_TOOLS = ("{} not found: install the pulseaudio-utils package "
                   "(libpulse on Arch Linux)")
@@ -67,15 +76,22 @@ class ParecSource:
         info: Native format and name of the stream; always 48 kHz stereo.
     """
 
-    def __init__(self, device: str, spawn: Callable[..., Any] = subprocess.Popen) -> None:
+    def __init__(self, device: str, spawn: Callable[..., Any] = subprocess.Popen, *,
+                 reserve_frames: int = 0) -> None:
         """Describe the stream without starting ``parec``.
 
         Args:
             device: PulseAudio source name, for example ``<sink>.monitor`` or a microphone.
             spawn: ``subprocess.Popen`` replacement; tests inject a fake process here.
+            reserve_frames: Frames to collect before the first delivery, which then hands them
+                over together; every later read is delivered as it arrives. The consumer thus
+                starts with a reserve it keeps for the whole stream. Frames still held back when
+                ``close`` is called are dropped; if ``parec`` exits by itself first, they are
+                delivered before ``on_end`` reports the exit. 0 delivers every read at once.
         """
         self.info = SourceInfo(name=device, sample_rate=SAMPLERATE, channels=_CHANNELS)
         self._spawn = spawn
+        self._reserve_frames = reserve_frames
         self._closing = threading.Event()
         # Re-entrant because start() reaches _stop_process while holding it.
         self._lock = threading.RLock()
@@ -183,18 +199,32 @@ class ParecSource:
 
     def _pump(self, stdout: Any, on_block: OnBlock) -> None:
         carry = b""
+        held: List[bytes] = []
+        held_frames = 0
+        priming = self._reserve_frames > 0
         while not self._closing.is_set():
             data = stdout.read(_READ_BYTES)
             if not data:
-                return
+                break
             # A pipe read can end mid-frame; frombuffer needs whole frames, so the tail
             # waits for the next read instead of being dropped or delivered misaligned.
             data = carry + data
             whole = len(data) - len(data) % _FRAME_BYTES
             carry = data[whole:]
-            if whole:
-                block = np.frombuffer(data, dtype="<f4", count=whole // 4)
-                on_block(block.reshape(-1, _CHANNELS))
+            if not whole:
+                continue
+            if priming:
+                held.append(data[:whole])
+                held_frames += whole // _FRAME_BYTES
+                if held_frames < self._reserve_frames:
+                    continue
+                data, whole = b"".join(held), held_frames * _FRAME_BYTES
+                held, priming = [], False
+            _deliver(on_block, data, whole)
+        # parec died before the reserve filled: that audio belongs in the recording, and the
+        # exit is reported only after it. A requested close drops it, like any unmixed tail.
+        if held and not self._closing.is_set():
+            _deliver(on_block, b"".join(held), held_frames * _FRAME_BYTES)
 
     def _exit_error(self, proc: Any) -> RuntimeError:
         # Reap first: stderr only reaches EOF once the process is gone.
@@ -204,6 +234,11 @@ class ParecSource:
         detail = f": {stderr}" if stderr else ""
         return RuntimeError(f"parec for {self.info.name!r} exited unexpectedly "
                             f"(exit code {code}){detail}")
+
+
+def _deliver(on_block: OnBlock, data: bytes, size: int) -> None:
+    block = np.frombuffer(data, dtype="<f4", count=size // 4)
+    on_block(block.reshape(-1, _CHANNELS))
 
 
 class LinuxBackend:
@@ -236,13 +271,15 @@ class LinuxBackend:
         """Open the monitor of the default output, which carries the call audio.
 
         Returns:
-            An unstarted source recording what the default sink plays.
+            An unstarted source recording what the default sink plays. It holds its first
+            two mixing blocks back, so the call lags the microphone by a constant 0.1-0.3 s.
 
         Raises:
             RuntimeError: If ``pactl``/``parec`` are missing, the server cannot be queried,
                 or there is no default output.
         """
-        return ParecSource(self._loopback_device(), spawn=self._spawn)
+        return ParecSource(self._loopback_device(), spawn=self._spawn,
+                           reserve_frames=_LOOPBACK_RESERVE_FRAMES)
 
     def open_microphone(self) -> Source:
         """Open the default input source.
@@ -254,7 +291,9 @@ class LinuxBackend:
             RuntimeError: If ``pactl``/``parec`` are missing, the server cannot be queried,
                 or the default input is absent or a monitor.
         """
-        return ParecSource(self._default_source(), spawn=self._spawn)
+        # No reserve: the microphone clocks the mixer, so holding it back would only delay
+        # everything.
+        return ParecSource(self._default_source(), spawn=self._spawn, reserve_frames=0)
 
     def describe(self) -> str:
         """Return a human-readable listing of the loopback source, microphone and monitors.

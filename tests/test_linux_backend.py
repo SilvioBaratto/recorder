@@ -25,6 +25,7 @@ from fake_parec import (
 from recorder.backends import linux, select_backend
 from recorder.backends.base import SourceInfo
 from recorder.backends.linux import LinuxBackend, ParecSource, parse_pactl_info
+from recorder.config import BLOCK
 
 WAIT = 2.0
 
@@ -204,6 +205,124 @@ def test_frames_are_reassembled_across_split_reads():
     got = np.concatenate(probe.blocks)
     assert got.dtype == np.float32 and got.shape == (3, 2)
     np.testing.assert_array_equal(got, np.frombuffer(samples, dtype="<f4").reshape(-1, 2))
+
+
+def _with_reserve(proc: FakeProc, reserve: int) -> ParecSource:
+    return ParecSource("sink.monitor", spawn=FakeSpawn(proc), reserve_frames=reserve)
+
+
+def test_reserve_holds_frames_back_then_streams():
+    """Nothing reaches the consumer until the reserve arrived; it goes out at once, then each read."""
+    proc = FakeProc()
+    probe = Probe()
+    source = _with_reserve(proc, reserve=4)
+    source.start(probe.on_block, probe.on_end)
+    try:
+        proc.stdout.feed(_frames(0.1, -0.1, 0.2, -0.2, 0.3, -0.3))
+        assert proc.stdout.wait_handled(WAIT)
+        assert probe.blocks == []
+        proc.stdout.feed(_frames(0.4, -0.4, 0.5, -0.5))
+        assert proc.stdout.wait_handled(WAIT)
+        assert [len(b) for b in probe.blocks] == [5]
+        proc.stdout.feed(_frames(0.6, -0.6))
+        assert proc.stdout.wait_handled(WAIT)
+        assert [len(b) for b in probe.blocks] == [5, 1]
+    finally:
+        source.close()
+    assert probe.ended.wait(WAIT)
+    assert probe.ends == [None]
+    expected = np.array([0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4, 0.5, -0.5, 0.6, -0.6],
+                        dtype=np.float32).reshape(-1, 2)
+    np.testing.assert_array_equal(np.concatenate(probe.blocks), expected)
+
+
+def test_reserve_keeps_frames_whole_across_split_reads():
+    """Held-back audio still goes through the partial-frame carry, so no frame is torn."""
+    samples = _frames(0.1, -0.1, 0.2, -0.2, 0.3, -0.3)
+    proc = FakeProc(chunks=[samples[:5], samples[5:16], samples[16:]])
+    probe = Probe()
+    probe.want_frames = 3
+    source = _with_reserve(proc, reserve=3)
+    source.start(probe.on_block, probe.on_end)
+    assert probe.got_frames.wait(WAIT)
+    source.close()
+    assert [len(b) for b in probe.blocks] == [3]
+    np.testing.assert_array_equal(probe.blocks[0], np.frombuffer(samples, dtype="<f4").reshape(-1, 2))
+
+
+def test_reserve_not_reached_is_dropped_on_close():
+    """Audio still held back when the recording stops is discarded, and the end is clean."""
+    proc = FakeProc()
+    probe = Probe()
+    source = _with_reserve(proc, reserve=10)
+    source.start(probe.on_block, probe.on_end)
+    proc.stdout.feed(_frames(0.5, 0.5, 0.25, 0.25))
+    assert proc.stdout.wait_handled(WAIT)
+    source.close()
+    assert probe.ended.wait(WAIT)
+    assert probe.blocks == []
+    assert probe.ends == [None]
+
+
+def test_reserve_not_reached_is_delivered_before_an_unexpected_exit():
+    """A parec that dies before the reserve fills still hands over its audio, then the error."""
+    proc = FakeProc(chunks=[_frames(0.5, 0.5, 0.25, 0.25)], exit_code=1, stderr="Stream error\n")
+    events: List[tuple] = []
+    ended = threading.Event()
+
+    def on_block(block: np.ndarray) -> None:
+        """Record the block in arrival order."""
+        events.append(("block", block.copy()))
+
+    def on_end(error: Optional[BaseException]) -> None:
+        """Record the end after any block."""
+        events.append(("end", error))
+        ended.set()
+
+    source = _with_reserve(proc, reserve=10)
+    source.start(on_block, on_end)
+    assert ended.wait(WAIT)
+    source.close()
+    assert [kind for kind, _ in events] == ["block", "end"]
+    np.testing.assert_array_equal(events[0][1], np.array([[0.5, 0.5], [0.25, 0.25]], dtype=np.float32))
+    error = events[1][1]
+    assert isinstance(error, RuntimeError)
+    assert "exit code 1" in str(error) and "Stream error" in str(error)
+
+
+def test_loopback_is_held_back_by_two_mixing_blocks():
+    """The call side reaches the mixer only once two blocks arrived, which become its reserve."""
+    proc = FakeProc()
+    probe = Probe()
+    source = _backend(spawn=FakeSpawn(proc)).open_loopback()
+    source.start(probe.on_block, probe.on_end)
+    block = np.full((BLOCK, 2), 0.25, dtype="<f4").tobytes()
+    try:
+        proc.stdout.feed(block)
+        assert proc.stdout.wait_handled(WAIT)
+        assert probe.frames == 0
+        proc.stdout.feed(block)
+        assert proc.stdout.wait_handled(WAIT)
+        assert [len(b) for b in probe.blocks] == [2 * BLOCK]
+    finally:
+        source.close()
+    assert probe.ended.wait(WAIT)
+
+
+def test_microphone_is_never_held_back():
+    """The microphone clocks the mixer, so each of its reads is delivered as it arrives."""
+    proc = FakeProc()
+    probe = Probe()
+    source = _backend(spawn=FakeSpawn(proc)).open_microphone()
+    source.start(probe.on_block, probe.on_end)
+    block = np.full((BLOCK, 2), 0.25, dtype="<f4").tobytes()
+    try:
+        proc.stdout.feed(block)
+        assert proc.stdout.wait_handled(WAIT)
+        assert [len(b) for b in probe.blocks] == [BLOCK]
+    finally:
+        source.close()
+    assert probe.ended.wait(WAIT)
 
 
 def test_info_describes_the_native_format():
