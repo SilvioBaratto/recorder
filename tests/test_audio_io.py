@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import threading
 
+import numpy as np
+import pytest
+
 from fake_backend import FakeSource
 from fake_pyaudio import LOOPBACK, RATE, FakePyAudio, FakePyAudioModule, FakeWindowsBackend
 from recorder.audio_io import DeviceStream
@@ -83,3 +86,72 @@ def test_source_error_stops_the_recording():
     puller.start()
     puller.join(WAIT)
     assert not puller.is_alive()
+
+
+class _CapturingSource:
+    """Hands the stream's callbacks back to the test so it can drive them by hand."""
+
+    info = SourceInfo(name="manual", sample_rate=48000, channels=2)
+
+    def __init__(self) -> None:
+        self.on_block: OnBlock = lambda _block: None
+        self.on_end: OnEnd = lambda _error: None
+
+    def start(self, on_block: OnBlock, on_end: OnEnd) -> None:
+        """Remember the callbacks instead of delivering anything."""
+        self.on_block = on_block
+        self.on_end = on_end
+
+    def close(self) -> None:
+        """Nothing to release."""
+
+
+def test_blocks_after_stop_are_dropped():
+    """Audio delivered after the stop signal is discarded, so a late block cannot extend the mix."""
+    source = _CapturingSource()
+    stop = threading.Event()
+    stream = DeviceStream(source, 48000, stop, lambda _msg: None, "loopback")
+    stream.start()
+    stop.set()
+
+    source.on_block(np.full((480, 2), 0.5, dtype=np.float32))
+
+    assert len(stream.pull_nowait(10 ** 6)) == 0
+    assert not stream.heard_signal
+
+
+def test_on_end_still_stops_and_finishes_when_logging_fails():
+    """A broken log sink must not leave the mixer blocked on a stream that already ended."""
+    source = _CapturingSource()
+    stop = threading.Event()
+
+    def broken_log(_msg: str) -> None:
+        raise OSError("disk full")
+
+    stream = DeviceStream(source, 48000, stop, broken_log, "loopback")
+    stream.start()
+
+    with pytest.raises(OSError):
+        source.on_end(RuntimeError("boom"))
+
+    assert stop.is_set()
+    # Cleared so that only the finished flag, not the stop signal, can release pull().
+    stop.clear()
+    result = []
+    puller = threading.Thread(target=lambda: result.append(stream.pull(100)), daemon=True)
+    puller.start()
+    puller.join(WAIT)
+    assert not puller.is_alive()
+
+
+def test_heard_signal_tracks_non_zero_blocks():
+    """Only a block with a non-zero sample counts as signal; zeroed buffers do not."""
+    source = _CapturingSource()
+    stream = DeviceStream(source, 48000, threading.Event(), lambda _msg: None, "loopback")
+    stream.start()
+
+    source.on_block(np.zeros((480, 2), dtype=np.float32))
+    assert not stream.heard_signal
+
+    source.on_block(np.full((480, 2), 0.1, dtype=np.float32))
+    assert stream.heard_signal

@@ -106,6 +106,13 @@ def record(output: Path, stop_event: threading.Event, log: Log, samplerate: int,
             # blocked inside it crashes the process, which must not take the recording with it.
             if state.publish_partial(output):
                 log(f"saved {output} duration={frames / samplerate:.1f}s")
+            if frames and not loop_stream.heard_signal and backend.silence_hint:
+                log(f"WARNING: {backend.silence_hint}")
+                try:
+                    state.write_warning(backend.silence_hint)
+                except OSError:
+                    # The log line carries it; a side note must not fail a saved recording.
+                    pass
         finally:
             stop_event.set()
             try:

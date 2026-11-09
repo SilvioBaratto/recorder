@@ -122,6 +122,45 @@ def test_devices_prints_backend_description(capsys, monkeypatch):
     assert backend.closed
 
 
+def test_stop_prints_a_pending_warning(fake_daemon, capsys):
+    """A warning the daemon left behind is shown after the saved line, then consumed."""
+    fake_daemon(b"ID3 captured frames")
+    state.write_warning("call side silent")
+    assert cli.cmd_stop(None) == 0
+    out = capsys.readouterr().out
+    assert out.index("Saved") < out.index("Warning: call side silent")
+    assert state.pop_warning() is None
+
+
+def test_stop_discards_the_warning_when_no_mp3_was_produced(fake_daemon, capsys):
+    """A warning about a recording that does not exist is dropped rather than shown."""
+    fake_daemon(b"")
+    state.write_warning("call side silent")
+    assert cli.cmd_stop(None) == 1
+    assert "call side silent" not in capsys.readouterr().out
+    assert state.pop_warning() is None
+
+
+def test_start_clears_a_stale_warning(monkeypatch):
+    """A warning from an earlier recording must not leak into a new one."""
+
+    class _Healthy:
+        pid = os.getpid()
+
+        def poll(self):
+            """Report the daemon as still running."""
+            return None
+
+    state.write_warning("left over from the last recording")
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *_a, **_k: _Healthy())
+    monkeypatch.setattr(cli, "_STARTUP_GRACE_SECONDS", 0.01)
+    try:
+        assert cli.cmd_start(None) == 0
+        assert state.pop_warning() is None
+    finally:
+        state.clear_state()
+
+
 def test_stop_does_not_publish_an_empty_recording(fake_daemon):
     """An empty .part means nothing was encoded: no mp3, and stop reports failure."""
     output = fake_daemon(b"")

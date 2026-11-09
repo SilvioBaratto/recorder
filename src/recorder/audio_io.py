@@ -55,12 +55,28 @@ class DeviceStream:
         self._max_buffer = target_rate * 10  # drop oldest beyond ~10 s to bound latency/memory
         self._cond = threading.Condition()
         self._finished = False
+        self._heard_signal = False
+
+    @property
+    def heard_signal(self) -> bool:
+        """Whether any delivered block carried a non-zero sample.
+
+        A device that is open but never carries signal is how macOS reports a missing System
+        Audio Recording permission, so this is the only evidence of it.
+        """
+        return self._heard_signal
 
     def start(self) -> None:
         """Begin delivery from the source's own thread."""
         self._source.start(self._on_block, self._on_end)
 
     def _on_block(self, native: np.ndarray) -> None:
+        # A source thread can still deliver after stop while it winds down; those frames must
+        # not reach the mix.
+        if self._stop.is_set():
+            return
+        if not self._heard_signal and native.any():
+            self._heard_signal = True
         frames = self._resampler.process(_to_stereo(native, self._channels))
         if len(frames):
             with self._cond:
@@ -70,13 +86,18 @@ class DeviceStream:
                 self._cond.notify_all()
 
     def _on_end(self, error: Optional[BaseException]) -> None:
-        if error is not None:
-            # One failed device ends the whole recording, so what was captured gets saved.
-            self._log(f"{self.label} capture error: {error!r}")
-            self._stop.set()
-        with self._cond:
-            self._finished = True
-            self._cond.notify_all()
+        try:
+            if error is not None:
+                self._log(f"{self.label} capture error: {error!r}")
+        finally:
+            # Runs even when logging raises: a broken log sink must not leave the mixer waiting
+            # on a stream that already ended.
+            if error is not None:
+                # One failed device ends the whole recording, so what was captured gets saved.
+                self._stop.set()
+            with self._cond:
+                self._finished = True
+                self._cond.notify_all()
 
     def pull(self, frames: int) -> np.ndarray:
         """Return up to ``frames`` buffered frames, blocking until available or finished.

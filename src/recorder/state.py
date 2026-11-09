@@ -15,6 +15,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 _UNLOCK_TIMEOUT_SECONDS = 5.0
 _TERM_GRACE_SECONDS = 2.0
@@ -49,6 +50,11 @@ def _stop_flag() -> Path:
 def log_file() -> Path:
     """Return the daemon log path (the only window into the detached process)."""
     return state_dir() / "engine.log"
+
+
+def warning_file() -> Path:
+    """Return the path where the daemon leaves a note for ``recorder stop`` to print."""
+    return state_dir() / "warning.txt"
 
 
 def partial_path(output: Path) -> Path:
@@ -112,6 +118,27 @@ def read_state() -> dict | None:
 def clear_state() -> None:
     """Remove the state file, ignoring absence."""
     _state_file().unlink(missing_ok=True)
+
+
+def write_warning(message: str) -> None:
+    """Leave ``message`` for the next ``recorder stop``, which runs in another process."""
+    ensure_dirs()
+    warning_file().write_text(message, encoding="utf-8")
+
+
+def pop_warning() -> Optional[str]:
+    """Return the pending warning and delete it, or None if there is none."""
+    try:
+        message = warning_file().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    warning_file().unlink(missing_ok=True)
+    return message
+
+
+def clear_warning() -> None:
+    """Remove any pending warning, ignoring absence."""
+    warning_file().unlink(missing_ok=True)
 
 
 def set_stop_flag() -> None:

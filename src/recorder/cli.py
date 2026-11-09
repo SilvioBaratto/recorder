@@ -31,6 +31,7 @@ def cmd_start(_args) -> int:
 
     state.ensure_dirs()
     state.clear_stop_flag()
+    state.clear_warning()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output = state.audio_dir() / f"recording-{timestamp}.mp3"
 
@@ -93,11 +94,14 @@ def cmd_stop(_args) -> int:
         state.terminate(int(data["pid"]))
     state.clear_stop_flag()
     state.clear_state()
+    warning = state.pop_warning()
     recovered = state.publish_partial(output)
 
     if output.exists():
         size_mb = output.stat().st_size / 1_000_000
         print(f"Saved {output} ({size_mb:.1f} MB)")
+        if warning:
+            print(f"Warning: {warning}")
         if recovered:
             print("The recorder did not shut down cleanly; the audio it had written was recovered "
                   "(the last moment may be cut). Details in .state/engine.log.")

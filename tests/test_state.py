@@ -78,6 +78,20 @@ def test_is_active_true_for_live_pid():
     assert state.is_active() is True
 
 
+def test_warning_roundtrip_and_pop_deletes():
+    """A written warning is handed out exactly once; clearing an absent one is harmless."""
+    assert state.pop_warning() is None
+    state.write_warning("grant System Audio Recording \u2014 then retry")
+    assert state.warning_file().exists()
+    assert state.pop_warning() == "grant System Audio Recording \u2014 then retry"
+    assert state.pop_warning() is None
+    assert not state.warning_file().exists()
+    state.clear_warning()
+    state.write_warning("again")
+    state.clear_warning()
+    assert state.pop_warning() is None
+
+
 def test_tail_log_without_file():
     """Tailing a missing log returns a placeholder rather than raising."""
     assert state.tail_log() == "(no engine.log)"
