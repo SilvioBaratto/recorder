@@ -132,6 +132,45 @@ def test_stop_prints_a_pending_warning(fake_daemon, capsys):
     assert state.pop_warning() is None
 
 
+def test_stop_publishes_before_reading_the_warning(fake_daemon, monkeypatch):
+    """The recording is renamed into place before the side note is even looked at."""
+    output = fake_daemon(b"ID3 captured frames")
+    published_when_read = []
+    real_pop_warning = state.pop_warning
+
+    def pop_warning():
+        """Note whether the mp3 already exists, then read the warning as usual."""
+        published_when_read.append(output.exists())
+        return real_pop_warning()
+
+    monkeypatch.setattr(state, "pop_warning", pop_warning)
+    assert cli.cmd_stop(None) == 0
+    assert published_when_read == [True]
+
+
+def test_stop_saves_despite_a_directory_at_the_warning_path(fake_daemon, capsys):
+    """An unreadable warning must never cost the recording or turn a saved stop into a failure."""
+    output = fake_daemon(b"ID3 captured frames")
+    state.warning_file().mkdir(parents=True)
+    assert cli.cmd_stop(None) == 0
+    out = capsys.readouterr().out
+    assert "Saved" in out
+    assert "Warning:" not in out
+    assert output.read_bytes() == b"ID3 captured frames"
+
+
+def test_stop_saves_despite_an_undecodable_warning(fake_daemon, capsys):
+    """A corrupt warning file is dropped; the recording is still saved and reported."""
+    output = fake_daemon(b"ID3 captured frames")
+    state.warning_file().write_bytes(b"\xff\xfe broken \x80")
+    assert cli.cmd_stop(None) == 0
+    out = capsys.readouterr().out
+    assert "Saved" in out
+    assert "Warning:" not in out
+    assert output.read_bytes() == b"ID3 captured frames"
+    assert not state.warning_file().exists()
+
+
 def test_stop_discards_the_warning_when_no_mp3_was_produced(fake_daemon, capsys):
     """A warning about a recording that does not exist is dropped rather than shown."""
     fake_daemon(b"")

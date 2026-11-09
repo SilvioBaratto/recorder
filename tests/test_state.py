@@ -92,6 +92,21 @@ def test_warning_roundtrip_and_pop_deletes():
     assert state.pop_warning() is None
 
 
+def test_pop_warning_treats_an_undecodable_note_as_none_and_deletes_it():
+    """A corrupt note is not worth an exception in ``stop``; it is dropped instead."""
+    state.ensure_dirs()
+    state.warning_file().write_bytes(b"\xff\xfe broken \x80")
+    assert state.pop_warning() is None
+    assert not state.warning_file().exists()
+
+
+def test_pop_warning_treats_an_unreadable_path_as_none():
+    """Something other than a file at the warning path reads as no warning instead of raising."""
+    state.ensure_dirs()
+    state.warning_file().mkdir()
+    assert state.pop_warning() is None
+
+
 def test_tail_log_without_file():
     """Tailing a missing log returns a placeholder rather than raising."""
     assert state.tail_log() == "(no engine.log)"

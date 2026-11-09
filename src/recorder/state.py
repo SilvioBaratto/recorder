@@ -127,12 +127,24 @@ def write_warning(message: str) -> None:
 
 
 def pop_warning() -> Optional[str]:
-    """Return the pending warning and delete it, or None if there is none."""
+    """Return the pending warning and delete it.
+
+    The warning is a side note to a saved recording, so anything that stops it from being read
+    (no file, a directory in its place, no permission, bytes that are not UTF-8) yields None
+    instead of an exception. The file is still deleted when that is possible.
+
+    Returns:
+        The warning text, or None if there is no readable warning.
+    """
+    path = warning_file()
     try:
-        message = warning_file().read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    warning_file().unlink(missing_ok=True)
+        message: Optional[str] = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        message = None
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
     return message
 
 

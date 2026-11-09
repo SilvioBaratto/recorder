@@ -94,8 +94,10 @@ def cmd_stop(_args) -> int:
         state.terminate(int(data["pid"]))
     state.clear_stop_flag()
     state.clear_state()
-    warning = state.pop_warning()
     recovered = state.publish_partial(output)
+    # Only after publishing: the warning is a side note and must never cost the recording. It
+    # is still consumed here, so it cannot leak into a later stop.
+    warning = state.pop_warning()
 
     if output.exists():
         size_mb = output.stat().st_size / 1_000_000
