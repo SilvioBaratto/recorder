@@ -32,8 +32,9 @@ _MONITOR_SUFFIX = ".monitor"
 # Holding the first blocks back gives the call side a standing reserve that absorbs that jitter.
 # Under load the two streams' reads drift more than one block apart: in 10 traced recordings
 # per size against PulseAudio, the call had a gap in 4 with no reserve, 1 with two blocks and
-# none with three. The price is a constant lag of the call behind the microphone (0.2-0.4 s,
-# depending on the phase between the bursts) and the reserve being left unmixed at stop.
+# none with three. The price is a constant lag of the call behind the microphone (0.2-0.5 s,
+# depending on how the two streams' first bursts line up; 0.4 s in 9 of 10 end-to-end runs and
+# 0.5 s in one), and the same length of call audio at the end is left unmixed at stop.
 _LOOPBACK_RESERVE_FRAMES = 3 * BLOCK
 
 _MISSING_TOOLS = ("{} not found: install the pulseaudio-utils package "
@@ -275,7 +276,7 @@ class LinuxBackend:
         Returns:
             An unstarted source recording what the default sink plays. It holds its first
             three mixing blocks (0.3 s) back, so the call lags the microphone by a constant
-            0.2-0.4 s.
+            0.2-0.5 s.
 
         Raises:
             RuntimeError: If ``pactl``/``parec`` are missing, the server cannot be queried,

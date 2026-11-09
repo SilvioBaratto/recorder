@@ -92,9 +92,9 @@ All loopback endpoints:
 Status: the Linux backend is unit-tested with fakes and was also run end to end against a real
 PulseAudio 16.1 server in Docker (`bash scripts/e2e_linux.sh`: Ubuntu 24.04, null sinks,
 played tones). That script also runs the unit tests in the container and fails on any gap in
-the call side. With the call-side reserve described under Known limits, 5 of 7 runs passed;
-each of the other two failed on a single gap of 15 or 20 ms in the call. It has not been run
-against PipeWire or real audio hardware.
+the call side. With the three-block call-side reserve described under Known limits, 10 of 10
+runs passed with no gap in the call (an earlier two-block reserve passed 5 of 7, each failure a
+single 15 or 20 ms gap). It has not been run against PipeWire or real audio hardware.
 
 ## Windows
 
@@ -187,12 +187,14 @@ permission or device.
   AirPods profile change mid-call.
 - Linux: the default output is resolved when recording starts; switching it mid-recording is
   not followed.
-- Linux: the call lags your voice by a constant 0.2 to 0.4 s. The recorder holds back the
-  first 0.3 s of call audio as a reserve, so that `parec` bursts arriving a moment late do not
-  leave gaps in the call; the call audio still in that reserve when you stop (up to about
-  0.3 s) is not in the file. The reserve absorbs about 0.2 s of timing difference between the
-  two streams; a longer stall could still leave a short gap in the call. macOS has no such
-  reserve, and whether its call side shows the same short gaps is unverified.
+- Linux: the call lags your voice by a constant 0.2 to 0.5 s, depending on how the two
+  streams' first bursts line up (0.4 s in 9 of 10 Docker test runs, 0.5 s in one). The
+  recorder holds back the first 0.3 s of call audio as a reserve, so that `parec` bursts
+  arriving a moment late do not leave gaps in the call. Because of the lag, the last stretch of
+  call audio before you stop, as long as the lag, is not in the file. The reserve absorbs about
+  0.2 s of timing difference between the two streams; a longer stall could still leave a short
+  gap in the call. macOS has no such reserve, and whether its call side shows the same short
+  gaps is unverified.
 - Only macOS warns about a silent call side. Windows and Linux never do.
 - The microphone and the call are clocked by separate devices, so a very long recording can
   drift between them.

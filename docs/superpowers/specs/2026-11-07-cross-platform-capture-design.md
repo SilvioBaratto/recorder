@@ -200,9 +200,11 @@ environment.
   and in 10 traced recordings per size the call had a gap in 4 with no reserve, 1 with two
   blocks and none with three (see open question 3). Frames still held back at `close()` are
   dropped; if `parec` exits by itself first, they are delivered before `on_end` reports the
-  exit. The cost is a constant lag of the call behind the microphone, 0.2 to 0.4 s depending
-  on the phase between the two streams' bursts, and up to about 0.3 s of call audio left
-  unmixed at stop. The engine, `fit_and_mix` and the Windows path are unchanged.
+  exit. The cost is a constant lag of the call behind the microphone, 0.2 to 0.5 s depending
+  on how the two streams' first bursts line up (a partial first read takes one more burst to
+  fill the reserve; 0.4 s in 9 of 10 end-to-end runs, 0.5 s in one), and the last stretch of
+  call audio before stop, as long as the lag, is left unmixed. The engine, `fit_and_mix` and
+  the Windows path are unchanged.
 - **Orphans:** on a normal stop the daemon closes each `parec` itself (`SIGTERM`, then
   `SIGKILL`) before it exits. Only when the daemon has not exited 15 s after the stop request
   does `recorder stop` terminate the daemon's whole process group, which `parec` belongs to.
@@ -367,7 +369,9 @@ goes through the backend interface.
    call gap in 4 of 10 with no reserve, 1 of 10 with two blocks and 0 of 10 with three blocks.
    Under that load both streams' reads were irregular (about 100 to 7400 frames), and the
    two-block gap came when the microphone's deliveries ran more than a block ahead of the
-   loopback's. The reserve was therefore raised to three blocks (0.1 s more lag).
+   loopback's. The reserve was therefore raised to three blocks (0.1 s more lag). With three
+   blocks the script passed 10 of 10 runs on 2026-11-09 with no call-side dropout; the call
+   started 0.4 s after the voice in 9 of them and 0.5 s after in one.
    With `virt.monitor` as the default source, `recorder start` now fails with "no microphone:
    the default input is 'virt.monitor', a monitor of an output; ...".
    **Still open:** PipeWire through `pipewire-pulse`, and hardware sinks and microphones;
@@ -382,7 +386,7 @@ goes through the backend interface.
    devices` shows both lines as `UNAVAILABLE (no default output device; ...)` and
    `UNAVAILABLE (no microphone: ...)`, and `recorder start` fails with "no default output
    device; select one with 'pactl set-default-sink <name>' ...". `scripts/e2e_linux.sh` asserts
-   this against the real server, and it held in all 7 runs.
+   this against the real server, and it held in all 17 runs.
 
 Settled: the Python 3.9 floor. On 2026-11-09, with macOS's `/usr/bin/python3` (3.9.6), the
 install succeeded without `catap`, the full suite passed (149 tests), and `recorder start` exited

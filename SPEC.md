@@ -144,14 +144,16 @@ fails with a message asking for Python 3.11 or later.
   mid-recording is not followed. The backend is unit-tested against fakes and was also run end
   to end against a real PulseAudio server in Docker (`scripts/e2e_linux.sh`, null sinks and
   played tones); PipeWire and real audio hardware are unverified.
-- Linux: the call lags the microphone by a constant 0.2 to 0.4 s. The loopback's `parec`
-  reader holds back its first three blocks (0.3 s) and then streams, which leaves the mixer a
-  standing reserve of call audio; without it, a burst that arrived just after its microphone
-  block was padded with silence and shifted the rest of the call. Up to about 0.3 s of call
-  audio still in the reserve at stop is not mixed. The reserve absorbs about two blocks of
-  timing difference between the two streams. An earlier two-block reserve passed 5 of 7 Docker
-  end-to-end runs (each failure a single 15 or 20 ms call gap), which is why it is three.
-  macOS has no such reserve; whether its call side shows the same gaps is unverified.
+- Linux: the call lags the microphone by a constant 0.2 to 0.5 s, depending on how the two
+  streams' first bursts line up (0.4 s in 9 of 10 Docker runs, 0.5 s in one). The loopback's
+  `parec` reader holds back its first three blocks (0.3 s) and then streams, which leaves the
+  mixer a standing reserve of call audio; without it, a burst that arrived just after its
+  microphone block was padded with silence and shifted the rest of the call. The last stretch
+  of call audio before stop, as long as the lag, is not mixed. The reserve absorbs about two
+  blocks of timing difference between the two streams. With three blocks, 10 of 10 Docker
+  end-to-end runs passed with no call gap; an earlier two-block reserve passed 5 of 7 (each
+  failure a single 15 or 20 ms call gap). macOS has no such reserve; whether its call side
+  shows the same gaps is unverified.
 - Windows: the backend was moved, not rewritten, and is tested against an in-memory
   PyAudioWPatch fake. It is a behaviour-preserving move apart from reporting a negative
   `available()` as a device error and ignoring blocks delivered after stop.
