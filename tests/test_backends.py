@@ -14,6 +14,12 @@ loaded = {"pyaudiowpatch", "sounddevice", "catap"} & set(sys.modules)
 assert not loaded, sorted(loaded)
 """
 
+_IMPORT_CLI = """
+import sys
+import recorder.cli
+assert "numpy" not in sys.modules, "recorder.cli imported numpy"
+"""
+
 
 @pytest.mark.parametrize("platform, backend", [
     ("win32", "WindowsBackend"),
@@ -36,5 +42,12 @@ def test_unsupported_platform_raises(monkeypatch):
 def test_core_modules_import_no_audio_library():
     """The CLI and engine load on every OS; only the chosen backend pulls in its audio library."""
     result = subprocess.run([sys.executable, "-c", _IMPORT_CORE], capture_output=True, text=True,
+                            timeout=60)
+    assert result.returncode == 0, result.stderr
+
+
+def test_cli_does_not_import_numpy():
+    """``status`` and ``stop`` start a fresh process each time; numpy would only slow them down."""
+    result = subprocess.run([sys.executable, "-c", _IMPORT_CLI], capture_output=True, text=True,
                             timeout=60)
     assert result.returncode == 0, result.stderr

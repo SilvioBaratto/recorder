@@ -59,16 +59,24 @@ def record(output: Path, stop_event: threading.Event, log: Log, samplerate: int,
     backend = select_backend()
     try:
         loopback = backend.open_loopback()
-        log(f"loopback = {loopback.info.name!r} @ {loopback.info.sample_rate} Hz")
         try:
+            log(f"loopback = {loopback.info.name!r} @ {loopback.info.sample_rate} Hz")
             microphone = backend.open_microphone()
         except BaseException:
             loopback.close()
             raise
-        log(f"microphone = {microphone.info.name!r} @ {microphone.info.sample_rate} Hz")
-
-        loop_stream = DeviceStream(loopback, samplerate, stop_event, log, "loopback")
-        mic_stream = DeviceStream(microphone, samplerate, stop_event, log, "mic")
+        try:
+            log(f"microphone = {microphone.info.name!r} @ {microphone.info.sample_rate} Hz")
+            loop_stream = DeviceStream(loopback, samplerate, stop_event, log, "loopback")
+            mic_stream = DeviceStream(microphone, samplerate, stop_event, log, "mic")
+        except BaseException:
+            # Nothing has started yet, so closing is the whole cleanup. An open macOS tap keeps
+            # a non-daemon worker thread alive, which would leave the daemon unable to exit.
+            try:
+                loopback.close()
+            finally:
+                microphone.close()
+            raise
         frames = 0
         try:
             loop_stream.start()

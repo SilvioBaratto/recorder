@@ -95,6 +95,46 @@ def test_opening_failure_closes_already_opened_sources(monkeypatch, tmp_path):
     assert backend.closed
 
 
+def _log_failing_on(prefix: str):
+    """Return a log callable that raises on the line starting with ``prefix``."""
+
+    def log(message: str) -> None:
+        """Fail like a log sink that broke mid-start."""
+        if message.startswith(prefix):
+            raise OSError("log sink broke")
+
+    return log
+
+
+def test_failure_after_both_sources_opened_closes_them(monkeypatch, tmp_path):
+    """Opened sources are released even when the step after opening them fails.
+
+    catap's worker thread is not a daemon thread, so an unclosed tap would keep the daemon
+    process alive after it already cleared the state file.
+    """
+    backend = FakeBackend()
+    monkeypatch.setattr(engine, "select_backend", lambda: backend)
+    with pytest.raises(OSError, match="log sink broke"):
+        engine.record(tmp_path / "audio" / "rec.mp3", threading.Event(),
+                      _log_failing_on("microphone ="), RATE, RATE // 10)
+    assert backend.loopback.closed
+    assert backend.microphone.closed
+    assert not backend.loopback.started and not backend.microphone.started
+    assert backend.closed
+
+
+def test_failure_after_the_loopback_opened_closes_it(monkeypatch, tmp_path):
+    """A failure right after the loopback opened releases it before the microphone is touched."""
+    backend = FakeBackend()
+    monkeypatch.setattr(engine, "select_backend", lambda: backend)
+    with pytest.raises(OSError, match="log sink broke"):
+        engine.record(tmp_path / "audio" / "rec.mp3", threading.Event(),
+                      _log_failing_on("loopback ="), RATE, RATE // 10)
+    assert backend.loopback.closed
+    assert not backend.microphone.closed
+    assert backend.closed
+
+
 def _run_daemon_for_a_second(backend: FakeBackend, monkeypatch, output) -> None:
     """Run the daemon against ``backend`` until its mic has pushed a second of audio, then stop."""
     monkeypatch.setattr(engine, "select_backend", lambda: backend)

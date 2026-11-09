@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
-import numpy as np
+if TYPE_CHECKING:
+    # Type-only: recorder.cli reaches this module, and status/stop must not pay for numpy.
+    import numpy as np
 
-OnBlock = Callable[[np.ndarray], None]
+OnBlock = Callable[["np.ndarray"], None]
 """Receives one float32 block shaped ``(n, channels)`` at the source's native rate."""
 
 OnEnd = Callable[[Optional[BaseException]], None]
@@ -39,13 +41,15 @@ class Source(Protocol):
     info: SourceInfo
 
     def start(self, on_block: OnBlock, on_end: OnEnd) -> None:
-        """Begin delivering audio from the source's own thread.
+        """Begin delivering audio from a thread the source owns.
 
         Args:
-            on_block: Called for every captured block, from the source's thread.
-            on_end: Called exactly once, from the source's thread, when delivery stops.
-                Receives ``None`` after a normal ``close`` and the exception otherwise,
-                so the engine can tell a clean stop from a device failure.
+            on_block: Called for every captured block, from a thread the source owns.
+            on_end: Called exactly once when delivery stops. When the source fails by itself
+                it runs on a thread the source owns; when ``close`` ends delivery it may run
+                on the thread that called ``close`` instead. Receives ``None`` after a normal
+                ``close`` and the exception otherwise, so the engine can tell a clean stop
+                from a device failure.
         """
         ...
 
