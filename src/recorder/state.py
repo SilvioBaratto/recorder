@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
 _UNLOCK_TIMEOUT_SECONDS = 5.0
+_TERM_GRACE_SECONDS = 2.0
 
 
 def root() -> Path:
@@ -132,7 +134,8 @@ def pid_alive(pid: int) -> bool:
     """Return whether the process with ``pid`` is currently running.
 
     Uses ``OpenProcess``/``GetExitCodeProcess`` on Windows (``os.kill`` does not support a
-    liveness probe there) and signal 0 on POSIX.
+    liveness probe there). On POSIX an exited child of the caller is reaped and reported dead,
+    and any other pid is probed with signal 0; a pid we may not signal still counts as alive.
     """
     if not pid or pid <= 0:
         return False
@@ -153,23 +156,55 @@ def pid_alive(pid: int) -> bool:
         finally:
             kernel32.CloseHandle(handle)
     try:
+        # An exited but unreaped child is a zombie that still answers signal 0, so reap it first.
+        if os.waitpid(pid, os.WNOHANG)[0] != 0:
+            return False
+    except ChildProcessError:
+        pass
+    try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
+def _signal(pid: int, sig: int) -> None:
+    """Send ``sig`` to ``pid`` and, when it leads its own process group, to that whole group.
+
+    A process that already exited or belongs to another user is ignored.
+    """
+    try:
+        # killpg on a pid that is not a group leader would signal a different group, possibly
+        # the caller's own, so only a leader is signalled as a group.
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, sig)
+        else:
+            os.kill(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def terminate(pid: int) -> None:
-    """Forcibly terminate a process (and its children) by pid, best-effort."""
+    """Terminate a process (and its children) by pid, best-effort.
+
+    Windows kills the process tree outright. On POSIX the process (or its whole group, when it
+    leads one) gets ``SIGTERM`` and a short grace period, then ``SIGKILL`` if it is still alive.
+    """
     if not pid_alive(pid):
         return
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True)
-    else:
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
+        return
+    _signal(pid, signal.SIGTERM)
+    deadline = time.monotonic() + _TERM_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return
+        time.sleep(0.05)
+    if pid_alive(pid):
+        _signal(pid, signal.SIGKILL)
 
 
 def is_active() -> bool:

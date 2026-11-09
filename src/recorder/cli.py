@@ -56,7 +56,9 @@ def cmd_start(_args) -> int:
     state.write_state({"pid": proc.pid, "started_at": timestamp, "output": str(output)})
 
     time.sleep(_STARTUP_GRACE_SECONDS)
-    if not state.pid_alive(proc.pid):
+    # The child is ours, so its own exit status is authoritative; probing the pid would reap it
+    # behind Popen's back.
+    if proc.poll() is not None:
         print("Recording failed to start. Last log lines:")
         print(state.tail_log())
         state.clear_state()

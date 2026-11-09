@@ -1,5 +1,6 @@
 """Tests for argument dispatch and the no-audio CLI paths."""
 
+import os
 import subprocess
 import sys
 import time
@@ -127,3 +128,25 @@ def test_stop_does_not_publish_an_empty_recording(fake_daemon):
     assert cli.cmd_stop(None) == 1
     assert not output.exists()
     assert not Path(str(output) + ".part").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX zombie semantics")
+def test_start_reports_a_child_that_exits_immediately(monkeypatch, capsys):
+    """A daemon that dies during the startup grace is reported as failed and leaves no state."""
+    real_popen = subprocess.Popen
+    spawned = []
+
+    def exits_immediately(_cmd, **kwargs):
+        proc = real_popen([sys.executable, "-c", "raise SystemExit(1)"], **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(cli.subprocess, "Popen", exits_immediately)
+    monkeypatch.setattr(cli, "_STARTUP_GRACE_SECONDS", 0.5)
+    try:
+        assert cli.cmd_start(None) == 1
+        assert state.read_state() is None
+        assert "failed to start" in capsys.readouterr().out
+    finally:
+        for proc in spawned:
+            proc.wait()
