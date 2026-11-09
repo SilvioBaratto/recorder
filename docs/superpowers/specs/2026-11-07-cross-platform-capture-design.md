@@ -265,9 +265,9 @@ output switches are not recovered.
    *System Audio Recording* and *Microphone*, run `recorder start`, play audio and speak for
    about 10 s, run `recorder stop`, and confirm both streams are audible (`scripts/diag.py`
    prints per-stream RMS). The same run answers the open questions below.
-4. **Linux, pending:** an automated end-to-end run in a Docker container with a PulseAudio
-   null sink and a played tone, if Docker is available. If it is not, Linux is verified by the
-   unit tests only and the README says so.
+4. **Linux:** `scripts/e2e_linux.sh` runs the backend end to end in an `ubuntu:24.04` Docker
+   container against PulseAudio, with null sinks and played tones. Results are under open
+   question 3.
 5. **Windows:** cannot be run here. The backend is a behaviour-preserving move, so the check
    is a review of the diff plus a manual run by the user.
 
@@ -296,5 +296,31 @@ goes through the backend interface.
    the watcher in `macos.py`) and a recording that ends early; a tap that silently stops
    delivering signal leaves no trace at all. The limit is documented, not mitigated.
 3. Does `parec -d <sink>.monitor` behave the same on PipeWire as on PulseAudio, including the
-   0.1 s burst size that `--latency-msec=100` is meant to give? Nothing here has run against a
-   real server yet. (Docker covers PulseAudio only.)
+   0.1 s burst size that `--latency-msec=100` is meant to give? **PulseAudio: answered.** On
+   2026-11-09 `scripts/e2e_linux.sh` ran the backend against PulseAudio 16.1 in an
+   `ubuntu:24.04` container (aarch64, Docker on colima), with a null sink `virt` as the default
+   sink and a `module-virtual-source` named `fakemic` (fed from a second null sink) as the
+   default source. An 880 Hz tone played into `virt` and a 440 Hz tone played into the
+   microphone's null sink both came out of one `recorder start` / `recorder stop` mp3, in four
+   runs, each FFT peak at least 1.7 x 10^4 times the median spectral magnitude (the script
+   requires 20 times, and 10% of the other tone); `stop` printed `Saved` and no `Warning:`.
+   With `virt.monitor` as the default source, `recorder start` failed with "no microphone: the
+   sound server has no default input device". `parec` with the backend's arguments delivered
+   4800-frame (0.1 s) reads every 100 ms, at most 110 ms apart, from both the monitor and the
+   virtual source. Seen in that container and not yet explained or fixed: in 3 of the 6
+   recordings checked for gaps, the call side started 0.1 s behind the microphone and had one
+   to three gaps of 20 to 60 ms, while a raw `parec` capture of each side alone had none.
+   **Still open:** PipeWire through `pipewire-pulse`, and hardware sinks and microphones;
+   nothing has run against either.
+4. What does `pactl info` print when there is no default sink or source? **Answered** for
+   PulseAudio 16.1 with no sink and no source loaded: the lines are present and read
+   `Default Sink: (null)` and `Default Source: (null)`, not `n/a`, an empty value or
+   `@DEFAULT_SINK@`. `parse_pactl_info` does not treat `(null)` as missing yet, so
+   `recorder devices` lists `(null).monitor` and `(null)` as the devices instead of
+   `UNAVAILABLE`, and `recorder start` fails with `parec` reporting "Stream error: Invalid
+   argument" for `'(null).monitor'` followed by `NoAudioCaptured`, instead of "no default output
+   device".
+
+Settled: the Python 3.9 floor. On 2026-11-09, with macOS's `/usr/bin/python3` (3.9.6), the
+install succeeded without `catap`, the full suite passed (149 tests), and `recorder start` exited
+1 with the "needs Python 3.11 or later" message in its log tail and left no daemon running.

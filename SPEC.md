@@ -138,7 +138,8 @@ fails with a message asking for Python 3.11 or later.
   profile change mid-call.
 - macOS: a Mac mini has no built-in input device; a microphone or headset must be connected.
 - Linux: the default sink is resolved when recording starts; switching the default output
-  mid-recording is not followed. The backend is unit-tested against fakes and has not yet run
-  against a real PulseAudio or PipeWire server.
+  mid-recording is not followed. The backend is unit-tested against fakes and was also run end
+  to end against a real PulseAudio server in Docker (`scripts/e2e_linux.sh`, null sinks and
+  played tones); PipeWire and real audio hardware are unverified.
 - Windows: behaviour is unchanged. The backend was moved, not rewritten, and is tested against
   an in-memory PyAudioWPatch fake.

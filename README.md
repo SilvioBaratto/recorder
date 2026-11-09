@@ -89,8 +89,9 @@ All loopback endpoints:
   - alsa_output.<device>.analog-stereo.monitor
 ```
 
-Status: the Linux backend is unit-tested with fakes. It has not yet been run against a real
-PulseAudio or PipeWire server.
+Status: the Linux backend is unit-tested with fakes and was also run end to end against a real
+PulseAudio 16.1 server in Docker (`bash scripts/e2e_linux.sh`: Ubuntu 24.04, null sinks,
+played tones). It has not been run against PipeWire or real audio hardware.
 
 ## Windows
 
