@@ -38,6 +38,12 @@ _NO_MICROPHONE = ("no microphone available ({}): choose an input device in Syste
                   + _PERMISSIONS + " > Microphone")
 _PERMISSION_REMINDER = ("Grant your terminal app System Audio Recording and Microphone access in "
                         + _PERMISSIONS + ", then restart it.")
+# catap only raises a flag here; its detailed reason surfaces from stop(), after this message has
+# already ended the stream, so the message itself names the causes catap documents.
+_CAPTURE_FAILED = ("Core Audio reported a system-audio capture failure while recording; likely "
+                   "causes: the output device or route changed, the stream format changed, the "
+                   "tap was destroyed, or more than 256 audio buffers queued up unprocessed. "
+                   "Check the devices with 'recorder devices'")
 
 
 def check_preconditions(mac_version: Tuple[int, ...], python_version: Tuple[int, ...],
@@ -131,7 +137,7 @@ class CoreAudioTapSource:
         session = record_system_audio(on_buffer=self._forward, mute=False)
         try:
             session.start()
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 - catap also raises ValueError/RuntimeError subclasses
             _close_quietly(session)
             raise RuntimeError("could not start the Core Audio system-audio tap: {}".format(exc)) from exc
         try:
@@ -220,8 +226,7 @@ class CoreAudioTapSource:
     def _watch(self) -> None:
         while not self._closing.wait(_WATCH_SECONDS):
             if self._session.capture_failed:
-                self._end(RuntimeError("Core Audio reported a system-audio capture failure "
-                                       "while recording"))
+                self._end(RuntimeError(_CAPTURE_FAILED))
                 return
 
     def _teardown(self, watcher: Optional[threading.Thread]) -> None:

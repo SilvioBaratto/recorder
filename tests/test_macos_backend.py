@@ -339,6 +339,12 @@ def test_loopback_capture_failure_reaches_on_end():
     assert isinstance(probe.ends[0], RuntimeError)
     assert probe.blocks == []
     assert len(session.stop_threads) == 1
+    # catap's own reason never reaches the log, so the message has to name the likely causes.
+    message = str(probe.ends[0])
+    assert message.startswith("Core Audio reported a system-audio capture failure while recording")
+    assert "route" in message and "format" in message
+    assert "tap was destroyed" in message and "256" in message
+    assert "recorder devices" in message
 
 
 def test_loopback_on_block_failure_ends_without_stopping_inside_the_callback():
@@ -450,6 +456,20 @@ def test_loopback_start_failure_is_a_runtime_error():
     catap = FakeCatap(start_error=OSError("tap refused"))
     with pytest.raises(RuntimeError, match="tap refused"):
         _backend(catap=catap).open_loopback()
+    assert catap.sessions[0].close_calls == 1
+
+
+@pytest.mark.parametrize("error", [
+    ValueError("unsupported tap format"),
+    RuntimeError("native Core Audio error"),
+])
+def test_loopback_start_failure_of_any_kind_is_wrapped_with_cleanup(error):
+    """catap's format and native errors are not OSErrors; they still get the message and cleanup."""
+    catap = FakeCatap(start_error=error)
+    with pytest.raises(RuntimeError) as excinfo:
+        _backend(catap=catap).open_loopback()
+    assert str(excinfo.value) == "could not start the Core Audio system-audio tap: {}".format(error)
+    assert excinfo.value.__cause__ is error
     assert catap.sessions[0].close_calls == 1
 
 
