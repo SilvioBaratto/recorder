@@ -97,8 +97,7 @@ recorder/
 ├─ scripts/
 │  ├─ diag.py              # records both streams separately and compares them
 │  └─ transcribe.py        # faster-whisper transcription (faster-whisper is not a dependency)
-├─ tests/                  # unit tests against in-memory fakes; no audio hardware needed
-└─ docs/superpowers/       # cross-platform design spec and implementation plan
+└─ tests/                  # unit tests against in-memory fakes; no audio hardware needed
 ```
 
 Created at runtime and gitignored: `audio/` (finished mp3s) and `.state/` (`recording.json`,
