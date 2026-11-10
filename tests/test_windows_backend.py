@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from typing import Dict, List
 
+import pytest
+
 from fake_pyaudio import LOOPBACK, MIC, RATE, FakePyAudio, FakePyAudioModule, FakeWindowsBackend
 from recorder.backends.base import SourceInfo
 from recorder.backends.windows import WindowsBackend
@@ -139,3 +141,25 @@ def test_close_terminates_portaudio_once():
     backend.close()
     backend.close()
     assert pa.terminate_calls == 1
+
+
+class _RefusingPyAudio(FakePyAudio):
+    """A PortAudio that rejects every stream, as it does for a device that cannot be opened."""
+
+    def open(self, **kwargs):
+        """Fail the way PyAudio does: an OSError carrying PortAudio's code and text."""
+        raise OSError(-9996, "Invalid input device")
+
+
+def test_a_device_that_cannot_be_opened_is_named_in_the_error():
+    """The log must say which device PortAudio refused, because nothing else names it by then."""
+    backend = FakeWindowsBackend(FakePyAudioModule(_RefusingPyAudio()))
+    try:
+        with pytest.raises(OSError) as raised:
+            backend.open_microphone()
+    finally:
+        backend.close()
+
+    assert MIC["name"] in str(raised.value)
+    assert "Invalid input device" in str(raised.value)
+    assert isinstance(raised.value.__cause__, OSError)

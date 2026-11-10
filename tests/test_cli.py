@@ -208,7 +208,6 @@ def test_stop_does_not_publish_an_empty_recording(fake_daemon):
     assert not Path(str(output) + ".part").exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX zombie semantics")
 def test_start_reports_a_child_that_exits_immediately(monkeypatch, capsys):
     """A daemon that dies during the startup grace is reported as failed and leaves no state."""
     real_popen = subprocess.Popen

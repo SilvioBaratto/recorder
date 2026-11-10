@@ -95,14 +95,22 @@ class WindowsBackend:
         pa = self._portaudio()
         channels = int(device_info["maxInputChannels"])
         rate = int(device_info["defaultSampleRate"])
-        stream = pa.open(
-            format=self._module.paFloat32,
-            channels=channels,
-            rate=rate,
-            frames_per_buffer=max(256, rate // 10),
-            input=True,
-            input_device_index=device_info["index"],
-        )
+        try:
+            stream = pa.open(
+                format=self._module.paFloat32,
+                channels=channels,
+                rate=rate,
+                frames_per_buffer=max(256, rate // 10),
+                input=True,
+                input_device_index=device_info["index"],
+            )
+        except OSError as exc:
+            # The engine logs a device's name only after it opened, so without this a refusal
+            # would not say which device it was.
+            raise OSError(
+                "could not open {!r} ({} Hz, {} channels): {}".format(
+                    device_info["name"], rate, channels, exc)
+            ) from exc
 
         def read(frames: int) -> np.ndarray:
             """Return ``frames`` already-buffered frames shaped ``(frames, channels)``."""

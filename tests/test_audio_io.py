@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -15,8 +16,8 @@ from recorder.backends.base import OnBlock, OnEnd, SourceInfo
 WAIT = 2.0
 
 
-def test_silent_device_releases_its_stream_on_stop():
-    """A loopback with nothing playing must not trap its reader inside read() past stop.
+def test_silent_device_releases_its_stream_on_close():
+    """A loopback with nothing playing must not trap its reader inside read() once closed.
 
     A reader still parked in PortAudio when the daemon tears audio down crashes the process.
     """
@@ -155,3 +156,77 @@ def test_heard_signal_tracks_non_zero_blocks():
 
     source.on_block(np.full((480, 2), 0.1, dtype=np.float32))
     assert stream.heard_signal
+
+
+def _time_pull_after(stream: DeviceStream, trigger) -> float:
+    """Block a mixer-like thread in pull(), fire ``trigger``, and return how long pull took."""
+    elapsed = []
+
+    def mixer() -> None:
+        began = time.monotonic()
+        stream.pull(10 ** 9)
+        elapsed.append(time.monotonic() - began)
+
+    thread = threading.Thread(target=mixer, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+    fired = time.monotonic()
+    trigger()
+    thread.join(WAIT)
+    assert elapsed, "pull() never returned after the trigger"
+    return time.monotonic() - fired
+
+
+def test_stop_wakes_a_mixer_waiting_for_frames_promptly():
+    """The mixer parked in pull() must notice stop at once, not after the 0.5 s wait times out.
+
+    A live device keeps delivering while it winds down, and that late block is the only thing
+    that can wake the mixer once the reader thread no longer exits on stop by itself.
+    """
+    source = _CapturingSource()
+    stop = threading.Event()
+    stream = DeviceStream(source, 48000, stop, lambda _msg: None, "mic")
+    stream.start()
+
+    def stop_then_late_block() -> None:
+        stop.set()
+        source.on_block(np.zeros((480, 2), dtype=np.float32))
+
+    woke_after = _time_pull_after(stream, stop_then_late_block)
+
+    assert woke_after < 0.25
+
+
+class _ManualFailure:
+    """A source that stays quiet until the test tells it to fail."""
+
+    info = SourceInfo(name="lost", sample_rate=48000, channels=2)
+
+    def __init__(self) -> None:
+        self.on_end: OnEnd = lambda _error: None
+
+    def start(self, on_block: OnBlock, on_end: OnEnd) -> None:
+        """Keep ``on_end`` so the test can end the stream by hand."""
+        self.on_end = on_end
+
+    def close(self) -> None:
+        """Nothing to release."""
+
+
+def test_a_failed_loopback_wakes_the_mixer_waiting_on_the_microphone():
+    """One device failing sets stop; the mic stream's waiting mixer must wake without a timeout."""
+    mic_source = _CapturingSource()
+    lost = _ManualFailure()
+    stop = threading.Event()
+    mic = DeviceStream(mic_source, 48000, stop, lambda _msg: None, "mic")
+    loopback = DeviceStream(lost, 48000, stop, lambda _msg: None, "loopback")
+    mic.start()
+    loopback.start()
+
+    def lose_loopback_then_late_mic_block() -> None:
+        lost.on_end(OSError("device lost"))
+        mic_source.on_block(np.zeros((480, 2), dtype=np.float32))
+
+    woke_after = _time_pull_after(mic, lose_loopback_then_late_mic_block)
+
+    assert woke_after < 0.25

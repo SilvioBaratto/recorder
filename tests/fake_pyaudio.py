@@ -38,11 +38,18 @@ class FakeStream:
         self.reading = False
         self.frames_delivered = 0
         self.touched = threading.Event()
+        self.lost = threading.Event()
         self._release = threading.Event()
 
     def get_read_available(self) -> int:
-        """Return the frames readable without blocking: always 0 for a silent stream."""
+        """Return the frames readable without blocking: always 0 for a silent stream.
+
+        Once :attr:`lost` is set it returns PortAudio's error code for a vanished device,
+        which is what an unplugged headset or a changed default output looks like.
+        """
         self.touched.set()
+        if self.lost.is_set():
+            return -9983
         return self.rate // 100 if self.live else 0
 
     def read(self, frames: int, exception_on_overflow: bool = True) -> bytes:

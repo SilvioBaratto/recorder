@@ -8,7 +8,7 @@ import time
 import pytest
 
 from fake_backend import FakeBackend, FakeSource
-from fake_pyaudio import MIC, RATE, FakePyAudio, FakePyAudioModule, FakeWindowsBackend, TeardownCrash
+from fake_pyaudio import LOOPBACK, MIC, RATE, FakePyAudio, FakePyAudioModule, FakeWindowsBackend, TeardownCrash
 from recorder import _daemon, engine, state
 
 
@@ -211,3 +211,45 @@ def test_unwritable_warning_does_not_fail_the_recording(monkeypatch, tmp_path):
     assert "exc" not in outcome
     assert outcome["frames"] > 0
     assert output.exists() and output.stat().st_size > 0
+
+
+@pytest.mark.parametrize("lost_device, label", [(MIC, "mic"), (LOOPBACK, "loopback")])
+def test_losing_a_device_mid_recording_saves_the_mp3_and_tears_down_cleanly(
+        devices, tmp_path, lost_device, label):
+    """An unplugged headset or a changed default output ends the recording without losing it.
+
+    No stop is requested: the lost device alone must end the daemon, keep what was captured,
+    log which stream failed, and leave nothing inside PortAudio when it is torn down.
+    """
+    pa = devices()
+    output = tmp_path / "audio" / "rec.mp3"
+    outcome = {}
+
+    def run():
+        """Run the daemon, capturing whatever it dies with."""
+        try:
+            outcome["code"] = _daemon.main(["--output", str(output)])
+        except BaseException as exc:  # noqa: BLE001 - handed to the test to assert on
+            outcome["exc"] = exc
+
+    daemon = threading.Thread(target=run, daemon=True)
+    daemon.start()
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            mic = pa.streams.get(MIC["index"])
+            if mic is not None and mic.frames_delivered >= RATE // 2:
+                break
+            time.sleep(0.01)
+        pa.streams[lost_device["index"]].lost.set()
+        daemon.join(timeout=20)
+        assert not daemon.is_alive(), "daemon did not end after the device was lost"
+    finally:
+        state.set_stop_flag()
+        daemon.join(timeout=20)
+
+    assert "exc" not in outcome, outcome.get("exc")
+    assert output.exists() and output.stat().st_size > 0
+    assert not (tmp_path / "audio" / "rec.mp3.part").exists()
+    assert f"{label} capture error" in state.log_file().read_text(encoding="utf-8")
+    assert pa.terminate_calls == 1

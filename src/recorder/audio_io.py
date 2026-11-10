@@ -72,8 +72,11 @@ class DeviceStream:
 
     def _on_block(self, native: np.ndarray) -> None:
         # A source thread can still deliver after stop while it winds down; those frames must
-        # not reach the mix.
+        # not reach the mix. The wake-up matters: a source no longer exits on stop by itself, so
+        # without it a mixer parked in pull() would sit out its whole 0.5 s wait.
         if self._stop.is_set():
+            with self._cond:
+                self._cond.notify_all()
             return
         if not self._heard_signal and native.any():
             self._heard_signal = True
