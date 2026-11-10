@@ -79,14 +79,16 @@ recorder/
 ├─ SPEC.md                 # this file (also the package readme)
 ├─ README.md               # per-OS setup and troubleshooting
 ├─ src/recorder/
-│  ├─ config.py            # capture constants (samplerate, block size, bitrate)
+│  ├─ config.py            # capture constants (samplerate, block size, bitrate) and transcription constants
 │  ├─ state.py             # paths, state file, pid liveness, terminate, stop flag, warning note, log tail
 │  ├─ mix.py               # pure stereo mix (the unit-tested core)
 │  ├─ resample.py          # streaming linear resampler
 │  ├─ audio_io.py          # DeviceStream: per-source buffering, stereo conversion, resampling
 │  ├─ engine.py            # capture/mix/encode loop over a backend's two sources
 │  ├─ _daemon.py           # detached background entry point
-│  ├─ cli.py               # argparse subcommands
+│  ├─ cli.py               # argparse subcommands (start, stop, status, devices, transcribe)
+│  ├─ chunker.py           # decode an mp3 and cut it at quiet moments into small mono mp3 chunks
+│  ├─ transcribe.py        # send chunks to OpenAI gpt-transcribe in order, carrying context
 │  └─ backends/
 │     ├─ __init__.py       # select_backend(): lazy import per sys.platform
 │     ├─ base.py           # Source / Backend protocols, SourceInfo
@@ -113,6 +115,7 @@ the platform needs:
 | all | `numpy` (mixing), `lameenc` (mp3) | Python 3.9+ |
 | Windows | `PyAudioWPatch` (WASAPI loopback + mic) | none |
 | macOS | `sounddevice` (mic); `catap>=0.6.1,<0.7` (system-audio tap, Python 3.11+ only) | macOS 14.2+; System Audio Recording and Microphone permission for the terminal app |
+| optional `transcribe` extra | `openai` (API client), `miniaudio` (mp3 decoder; no ffmpeg) | `OPENAI_API_KEY` in the environment |
 | Linux | none | `parec` and `pactl` from `pulseaudio-utils` (`libpulse` on Arch); PipeWire needs `pipewire-pulse` |
 
 On macOS with Python 3.9 or 3.10 the install succeeds without `catap`, and `recorder start`
@@ -156,3 +159,6 @@ fails with a message asking for Python 3.11 or later.
 - Windows: the backend was moved, not rewritten, and is tested against an in-memory
   PyAudioWPatch fake. It is a behaviour-preserving move apart from reporting a negative
   `available()` as a device error and ignoring blocks delivered after stop.
+- `recorder transcribe` produces plain text only: `gpt-transcribe` returns no timestamps or
+  speaker labels, and the recording is a single mixed track. Diarization would need
+  `gpt-4o-transcribe-diarize`, which OpenAI has deprecated (shutdown 2027-02-26).

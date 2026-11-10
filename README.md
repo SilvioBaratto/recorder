@@ -10,6 +10,7 @@ recorder start     # begin capturing in the background, returns immediately
 recorder stop      # finish and save audio/recording-YYYYMMDD-HHMMSS.mp3
 recorder status    # is a recording in progress?
 recorder devices   # show which devices would be captured, and what is wrong with them
+recorder transcribe  # turn the newest mp3 into a text file with OpenAI (see Transcribe)
 ```
 
 The mp3 lands in `audio/` inside this folder, and `.state/engine.log` is the log of the
@@ -126,6 +127,39 @@ error that ends the recording and saves it, and blocks delivered after stop are 
 covered by tests against an in-memory PyAudioWPatch fake; it has not been run on Windows
 since the move.
 
+## Transcribe
+
+`recorder transcribe` turns a recording into a plain-text transcript with OpenAI's
+`gpt-transcribe` model. It is a batch job, not live captioning, and it handles recordings of
+any length, including 2 hours and more: the mp3 is decoded and cut into chunks of about 20
+minutes, each cut placed at the quietest moment near the mark so no word is split, every chunk
+is sent as a small mono mp3, and the texts are joined.
+
+Install the optional libraries and export your key (the key is read from the environment only):
+
+```
+pip install -e ".[transcribe]"
+export OPENAI_API_KEY=sk-...
+```
+
+```
+recorder transcribe                                   # newest mp3 in audio/ -> audio/<name>.txt
+recorder transcribe audio/recording-20260101-100000.mp3   # a specific recording
+recorder transcribe --languages it,en                 # hint the spoken languages (default: auto-detect)
+recorder transcribe --keywords "AC-42, Premium Plus"  # names and jargon to get right
+recorder transcribe --force                           # overwrite an existing .txt
+```
+
+- The audio is uploaded to OpenAI. OpenAI lists the model at $0.0045 per audio minute, about
+  $0.54 for 2 hours; check their pricing page for the current figure.
+- The output is text only: no timestamps and no speaker labels, because the recording is one
+  mixed track and `gpt-transcribe` does not label speakers.
+- If a chunk still fails after the client's retries, or you press Ctrl-C, the finished chunks
+  are saved to `<name>.txt.partial` and the command names the chunk that failed. Running it
+  again starts over.
+- A recording with no speech at all writes nothing; that usually means the capture devices were
+  wrong, so run `recorder devices`.
+
 ## Troubleshooting
 
 **macOS: the call is silent in the mp3, or `recorder stop` prints a `Warning:` line.**
@@ -202,10 +236,11 @@ permission or device.
 ## Development
 
 ```
-pip install -e ".[dev]"
+pip install -e ".[dev,transcribe]"
 pytest
 ```
 
-The tests use in-memory fakes and need no audio hardware or audio libraries. `scripts/diag.py`
+The tests use in-memory fakes and need no audio hardware, audio libraries or API key. Without
+the `transcribe` extra, the tests that decode real mp3s are skipped. `scripts/diag.py`
 records the call and the microphone separately and prints their levels, which helps when one
 of them comes out silent.
