@@ -15,6 +15,9 @@ from .config import PROMPT_TAIL_CHARS, TRANSCRIBE_MODEL
 _CLIENT_RETRIES = 5
 _CLIENT_TIMEOUT_SECONDS = 600
 
+_MIN_ECHO_CHARS = 40
+"""Shortest verbatim repeat of the prompt that is treated as an echo; shorter ones may be speech."""
+
 
 class TranscriptionError(Exception):
     """A chunk could not be obtained or transcribed; carries what was finished before it.
@@ -55,6 +58,20 @@ def prompt_tail(text: str, limit: int = PROMPT_TAIL_CHARS) -> str:
     return tail.strip()
 
 
+def _is_prompt_echo(text: str, prompt: str) -> bool:
+    """Return whether ``text`` only repeats ``prompt``.
+
+    Given a prompt, ``gpt-transcribe`` answers a chunk that holds no speech (silence, hiss, room
+    noise) with the prompt itself instead of an empty text. Left alone, a recording that runs on
+    after the meeting would end with the last paragraph repeated once per silent chunk. Spoken
+    words that reproduce 40 or more characters of the previous text verbatim are not plausible,
+    so a verbatim repeat is treated as an echo.
+    """
+    said = " ".join(text.split())
+    given = " ".join(prompt.split())
+    return bool(said) and said in given and len(said) >= min(len(given), _MIN_ECHO_CHARS)
+
+
 def join_texts(texts: Sequence[str]) -> str:
     """Join chunk transcripts with a blank line, skipping chunks that held no speech."""
     return "\n\n".join(text for text in texts if text)
@@ -71,8 +88,9 @@ def transcribe_chunks(
     """Transcribe ``chunks`` in order and return one stripped text per chunk.
 
     Chunks go out one at a time because each request's ``prompt`` is the tail of the transcript
-    so far, which keeps names and sentences consistent across the cuts. A silent chunk yields an
-    empty string and does not erase that context.
+    so far, which keeps names and sentences consistent across the cuts. A chunk without speech
+    yields an empty string, including when the model answers it by repeating the prompt, and does
+    not erase that context.
 
     Args:
         chunks: Chunks in recording order; may be a lazy iterator.
@@ -119,7 +137,8 @@ def transcribe_chunks(
             response = client.audio.transcriptions.create(**request)
         except (Exception, KeyboardInterrupt) as exc:
             raise TranscriptionError(index, chunk.start_s, list(texts), exc) from exc
-        texts.append((response.text or "").strip())
+        text = (response.text or "").strip()
+        texts.append("" if _is_prompt_echo(text, request.get("prompt", "")) else text)
         audio_done = chunk.start_s + chunk.duration_s
         if on_progress:
             on_progress(len(texts), audio_done)

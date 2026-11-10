@@ -130,3 +130,27 @@ def test_make_client_retries_and_timeout(monkeypatch):
     client = make_client()
     assert client.max_retries == 5
     assert client.timeout == 600
+
+
+OPENING = "Buongiorno a tutti, iniziamo la riunione di oggi con il primo punto all'ordine del giorno."
+FULL_TEXT = OPENING + " Il secondo punto riguarda il budget del team e le assunzioni previste."
+
+
+def test_prompt_echoed_on_a_silent_chunk_is_dropped():
+    """With no speech to transcribe the model repeats its prompt; that must not enter the transcript."""
+    client = FakeClient([OPENING, OPENING, OPENING])
+    texts = transcribe_chunks(_chunks(3), client)
+    assert texts == [OPENING, "", ""]
+    assert client.calls[2]["prompt"] == OPENING
+
+
+def test_partial_echo_of_the_prompt_is_dropped():
+    """A truncated repeat of the prompt is still a repeat."""
+    client = FakeClient([FULL_TEXT, "Il secondo punto riguarda il budget del team"])
+    assert transcribe_chunks(_chunks(2), client) == [FULL_TEXT, ""]
+
+
+def test_short_real_text_that_appears_in_the_prompt_is_kept():
+    """A genuine short utterance is not mistaken for an echo just because the prompt has the word."""
+    client = FakeClient([OPENING, "riunione"])
+    assert transcribe_chunks(_chunks(2), client) == [OPENING, "riunione"]
