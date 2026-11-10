@@ -142,6 +142,9 @@ pip install -e ".[transcribe]"
 export OPENAI_API_KEY=sk-...
 ```
 
+On Python 3.9, and on any Python without a prebuilt `miniaudio` wheel, pip compiles `miniaudio`
+from source, which needs a C compiler. Python 3.12 installs from a wheel.
+
 ```
 recorder transcribe                                   # newest mp3 in audio/ -> audio/<name>.txt
 recorder transcribe audio/recording-20260101-100000.mp3   # a specific recording

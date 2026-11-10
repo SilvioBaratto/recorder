@@ -42,3 +42,14 @@ def test_transcribe_extra_declares_openai_and_miniaudio():
         if req.marker and req.marker.evaluate(extra_env) and not req.marker.evaluate(default_env):
             names.add(canonicalize_name(req.name))
     assert names == {"openai", "miniaudio"}
+
+
+def test_miniaudio_floor_is_1_70():
+    """The extra needs miniaudio 1.70 or later, the first release to open wide Windows paths."""
+    requirement = next(
+        Requirement(line)
+        for line in requires("recorder") or []
+        if canonicalize_name(Requirement(line).name) == "miniaudio"
+    )
+    assert not requirement.specifier.contains("1.61")
+    assert requirement.specifier.contains("1.70")
