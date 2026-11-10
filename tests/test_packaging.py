@@ -30,3 +30,15 @@ def _deps_for(platform, py_version):
 def test_dependencies_per_platform(platform, py_version, expected):
     """Each platform pulls only its own audio backend; catap needs Python 3.11+."""
     assert _deps_for(platform, py_version) == expected
+
+
+def test_transcribe_extra_declares_openai_and_miniaudio():
+    """The transcribe command's libraries are opt-in and never part of the default install."""
+    extra_env = {"sys_platform": "linux", "python_version": "3.12", "extra": "transcribe"}
+    default_env = {**extra_env, "extra": ""}
+    names = set()
+    for line in requires("recorder") or []:
+        req = Requirement(line)
+        if req.marker and req.marker.evaluate(extra_env) and not req.marker.evaluate(default_env):
+            names.add(canonicalize_name(req.name))
+    assert names == {"openai", "miniaudio"}
